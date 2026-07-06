@@ -1,0 +1,39 @@
+#######mac→endo/fib
+mac$Group  <-  ifelse(mac$group=="Control","WT","KO")
+mac$Group <- factor(mac$Group,levels = c("WT","KO"))
+df_prop <- as.data.frame(prop.table(table(mac$Group, mac$Celltype), margin = 1))
+colnames(df_prop) <- c("Sample", "Celltype", "Ratio")
+#####堆砌桑基图
+library(ggalluvial)
+pic <- ggplot(df_prop, 
+              aes(x = Sample, 
+                  y = Ratio, 
+                  fill = Celltype, 
+                  stratum = Celltype, 
+                  alluvium = Celltype)) +
+  geom_flow(width = 0.5, 
+            alpha = 0.3, 
+            knot.pos = 0, 
+            color = 'white') +
+  geom_col(width = 0.5, 
+           color = 'white') +
+  scale_y_continuous(expand = c(0, 0)) +
+  # 使用指定的填充颜色
+  scale_fill_manual(values = group_col) +
+  # 坐标轴标签
+  xlab("") + 
+  ylab("Cell proportion") +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(angle = 75, 
+                               hjust = 1, 
+                               size = 14, 
+                               face = 'bold'),
+    axis.text.y = element_text(size = 14, 
+                               face = 'bold'),
+    axis.title.y = element_text(size = 14, 
+                                face = 'bold'),
+    legend.text = element_text(size = 14),
+    legend.title = element_text(size = 14)
+  )
+pic
