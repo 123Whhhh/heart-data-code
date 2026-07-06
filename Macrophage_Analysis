@@ -71,5 +71,65 @@ pic <- DotPlot(mac,
   scale_colour_gradientn(colors = c("#88CCEE", "#CC6677")) +
   theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
 ######
+dt <- import("./mac/代表性通路_亚群.xlsx")
+mycol <- mac_color
+dt$Description <- factor(dt$Description, 
+                         levels= rev(dt$Description))
+p <- ggplot(dt) +
+  geom_col(aes(x = -log10(p.adjust), y = Description, fill = factor(Celltype)),
+           width = 0.5) +
+  scale_x_continuous(expand = c(0,0), limits = c(0, 95)) +
+  scale_fill_manual(values = mycol, guide = "none") +   
+  geom_text(aes(x = 0.5, y = Description, label = Description),
+            size = 4, hjust = 0) +
+  labs(y = "", title = "GO enrichment item") +
+  theme_bw() +
+  theme(axis.text.y  = element_blank(),
+        axis.ticks.y = element_blank(),
+        panel.grid   = element_blank(),
+        plot.title   = element_text(hjust = 0.5, face = "bold"))
+p
+###
+ge <- c("Il1b", "Cxcl1", "Cxcl2", "Nfkbiz", "Fos", "Socs3", "Nlrp3","Tnfaip3","Mt1","Mt2","Sod2","Gpx3")
+choose <- ge
+#choose %in% rownames(mac_filt) 
+group2_matrix <- as.matrix(GetAssayData(mac_filt, assay = "RNA", slot = "data"))
+group2_matrix  <- group2_matrix[intersect(choose,rownames(group2_matrix)),]###gene choose
+mat   <- t(group2_matrix)
+a <- mac_filt@meta.data
+a <- data.frame(id=rownames(a),a)
+mat <- as.data.frame(mat)
+mat <- data.frame(id=rownames(mat),mat)
+data <- left_join(a,mat,by = "id")
+colnames(data)
+df <- data[,c(5,57:length(colnames(data)))]
+heatmap_data <- df %>%
+  group_by(group) %>%
+  summarise(across(everything(), ~ mean(.x, na.rm = TRUE))) %>% 
+  column_to_rownames("group") %>%
+  t() 
+library(ComplexHeatmap)
+pdf("./expression_heatmap.pdf",width = 8,height = 5)
+pheatmap(t(heatmap_data),
+         color = colorRampPalette(c("#2166AC", "white", "#B2182B"))(50),
+         scale = "none",  # 按行标准化 column
+         cluster_rows = F,  # 对行聚类
+         cluster_cols = F,  # 不对列聚类（保留分组顺序）
+         show_rownames = TRUE,  # 显示行名（通路名）
+         show_colnames = TRUE,  # 显示列名（分组名）
+         fontsize_row = 8,  # 行名字体大小
+         fontsize_col = 10,  # 列名字体大小
+         cellwidth = 22,  # 调整格子宽度
+         cellheight = 22,
+         display_numbers = F,
+         name = "Expression",
+         # gaps_row = c(7),
+         # gaps_col = c(7,11)
+         # annotation_row = row_annot,
+         # annotation_colors = sci_colors,
+         #main = "Inflammation") 
+)
+dev.off()
+
 
 
