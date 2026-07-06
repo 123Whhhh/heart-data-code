@@ -9,7 +9,7 @@ library(harmony)
 library(scDblFinder)
 library(SingleCellExperiment) 
 library(rio)
-###### 
+######
 sc_data <- import("./scdata")
 mac <-  subset(sc_data,subset=celltype == "Mac")
 mac <- NormalizeData(mac, normalization.method = "LogNormalize")
@@ -22,12 +22,11 @@ resolution <- seq(0.1,1,0.1)
 mac <- FindClusters(mac,
                     resolution = resolution,
                     verbose = TRUE)
-#####
 clustree(mac@meta.data, prefix = "RNA_snn_res.")
 mac <- FindClusters(mac, resolution = 0.3)
 mac <- RunUMAP(mac, dims = 1:10)
 DimPlot(mac, reduction = "umap", group.by = c("group","seurat_clusters"),label = T,raster = F)
-##
+######
 Idents(mac) <- "seurat_clusters"
 marker_mac <-FindAllMarkers(mac, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
 marker_mac <- subset(marker_mac,marker_mac$p_val_adj<=0.05&marker_mac$avg_log2FC>0.5)
@@ -38,9 +37,7 @@ marker_mac_sorted <- marker_mac %>%
 table(marker_mac$cluster)
 marker_mac_sorted$diff_pct <- marker_mac_sorted$pct.1-marker_mac_sorted$pct.2
 marker_mac_sorted  <- subset(marker_mac_sorted,marker_mac_sorted$diff_pct>0)
-
-
-##
+######
 mac@meta.data$Celltype <- mac@meta.data$seurat_clusters
 mac@meta.data$Celltype <- ifelse(mac@meta.data$seurat_clusters %in% c("0"),"Mac_Repair", mac@meta.data$Celltype)
 mac@meta.data$Celltype <- ifelse(mac@meta.data$seurat_clusters %in% c("1","2"),"Mac_M1",mac@meta.data$Celltype)
@@ -50,7 +47,29 @@ mac@meta.data$Celltype <- ifelse(mac@meta.data$seurat_clusters %in% c("5"),"Mac_
 mac@meta.data$Celltype <- ifelse(mac@meta.data$seurat_clusters %in% c("6"),"Mac_Cycling",mac@meta.data$Celltype)
 mac@meta.data$Celltype <- ifelse(mac@meta.data$seurat_clusters %in% c("7"),"Mac_Ly6c+",mac@meta.data$Celltype)
 DimPlot(mac, reduction = "umap", group.by = "Celltype",cols = col,label = F,raster = F)
-
-
+####
+library(cols4all)
+mac_color <- c4a("accent",7)
+col <- c("#BEAED4","#BF5B17" ,"#7FC97F", "#FDC086", "#FFFF99", "#386CB0", "#F0027F")
+cellty <- c("Mac_Cycling","Mac_Dcn+","Mac_Ly6c+", "Mac_M1","Mac_Pecam1+","Mac_Repair","Mac_Spp1+")
+group_col <- setNames(col,cellty)
+pic <- DimPlot(mac, reduction = "umap", group.by = c("Celltype") ,cols = group_col,label = F,raster = F)
+######
+mar <- c("Spp1","Trem2","Cdkn1a",
+         "Mrc1", "Cd163",
+         "Kdr", "Cdh5", "Pecam1",
+         "Il1b", "Nlrp3", "Cxcl2","Cd86",
+         "Ly6c2","Ccr2",
+         "Dcn", "Col1a1", 
+         "Mki67", "Top2a")
+pic <- DotPlot(mac,
+               group.by = 'Celltype',
+               features = unique(mar),
+               cluster.idents = FALSE,
+               assay = 'RNA',
+               col.min = 0) +
+  scale_colour_gradientn(colors = c("#88CCEE", "#CC6677")) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+######
 
 
