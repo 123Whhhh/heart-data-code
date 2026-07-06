@@ -1,1 +1,223 @@
+library(Seurat)
+library(SeuratObject)
+library(CellChat)
+merged_data <- readRDS("./sc_data_last4.0.rds")
+merged_data <- NormalizeData(merged_data,normalization.method = "LogNormalize")
 
+merged_data$condition <- ifelse(merged_data$group=="Abhd5_KO",'LS',"NL")
+data.input <- merged_data@assays$RNA@data
+meta <- merged_data@meta.data
+cell.use = rownames(meta)[meta$condition == 'LS'] 
+data.input = data.input[, cell.use] 
+meta = meta[cell.use,]
+ko_cellchat <- createCellChat(object = data.input, #支持normalized表达矩阵，Seurat对象，和SingleCellExperiment对象
+                              meta= meta, #meta文件
+                              group.by = 'celltype')
+ko_cellchat <- setIdent(ko_cellchat, ident.use = 'celltype')
+CellChatDB <- CellChatDB.mouse # 小鼠数据库
+# CellChatDB.use <- subsetDB(CellChatDB, search = "Secreted Signaling") 
+ko_cellchat@DB <- CellChatDB   ##CellChatDB.use
+#运行识别过表达基因
+ko_cellchat <- subsetData(ko_cellchat) 
+ko_cellchat <- identifyOverExpressedGenes(ko_cellchat,
+                                          only.pos = TRUE, #仅返回positive markers
+                                          thresh.pc = 0.1, #细胞比例阈值
+                                          thresh.fc = 0.25, #差异倍数
+                                          thresh.p = 0.05)
+#识别过表达基因配体-受体互作：
+ko_cellchat <- identifyOverExpressedInteractions(ko_cellchat)
+ko_cellchat<- computeCommunProb(ko_cellchat, raw.use = TRUE)
+ko_cellchat <- filterCommunication(ko_cellchat,min.cells = 10)
+# ko_cellchat <- netAnalysis_computeCentrality(ko_cellchat)
+####提取配受体对细胞通讯结果表
+df.net=subsetCommunication(ko_cellchat)
+ko_cellchat=computeCommunProbPathway(ko_cellchat)
+df.netp=subsetCommunication(ko_cellchat,slot.name = "netP")
+ko_cellchat=aggregateNet(ko_cellchat)
+groupsize=as.numeric(table(ko_cellchat@idents))
+pdf("./细胞通讯整体/ko_cellchat_num.pdf", width = 10, height = 7)
+par(mfrow=c(1,1),xpd=T)
+netVisual_circle(ko_cellchat@net$count,
+                 vertex.weight = groupsize,
+                 weight.scale = T,
+                 label.edge = F,
+                 title.name = "Number of interactions")
+dev.off()
+pdf("./细胞通讯整体//ko_cellchat_weight.pdf", width = 10, height = 7)
+par(mfrow=c(1,1),xpd=T)
+netVisual_circle(ko_cellchat@net$weight,
+                 vertex.weight = groupsize,
+                 weight.scale = T,
+                 label.edge = F,
+                 title.name = "Interaction weights/strength")
+dev.off()
+####con
+data.input <- merged_data@assays$RNA@data
+meta <- merged_data@meta.data
+cell.use = rownames(meta)[meta$condition == 'NL'] 
+data.input = data.input[, cell.use] 
+meta = meta[cell.use, ]
+con_cellchat <- createCellChat(object = data.input, #支持normalized表达矩阵，Seurat对象，和SingleCellExperiment对象
+                               meta= meta, #meta文件
+                               group.by = 'celltype')
+con_cellchat <- setIdent(con_cellchat, ident.use = 'celltype')
+# con_cellchat <- createCellChat(object = con_obj,                           
+#                               meta = con_obj@meta.data,                           
+#                               group.by = "Celltype")
+
+CellChatDB <- CellChatDB.mouse # 小鼠数据库
+# CellChatDB.use <- subsetDB(CellChatDB, search = "Secreted Signaling") 
+con_cellchat@DB <- CellChatDB
+#运行识别过表达基因
+con_cellchat <- subsetData(con_cellchat) 
+con_cellchat <- identifyOverExpressedGenes(con_cellchat,
+                                           only.pos = TRUE, #仅返回positive markers
+                                           thresh.pc = 0.1, #细胞比例阈值
+                                           thresh.fc = 0.25, #差异倍数
+                                           thresh.p = 0.05)
+con_cellchat <- identifyOverExpressedInteractions(con_cellchat)
+con_cellchat<- computeCommunProb(con_cellchat, raw.use = TRUE)
+con_cellchat <- filterCommunication(con_cellchat,min.cells = 10)
+# con_cellchat <- netAnalysis_computeCentrality(con_cellchat)
+df.net=subsetCommunication(con_cellchat)
+con_cellchat=computeCommunProbPathway(con_cellchat)
+df.netp=subsetCommunication(con_cellchat,slot.name = "netP")
+con_cellchat=aggregateNet(con_cellchat)
+groupsize=as.numeric(table(con_cellchat@idents))
+pdf("./细胞通讯整体//wt_cellchat_num.pdf", width = 10, height = 7)
+netVisual_circle(con_cellchat@net$count,
+                 vertex.weight = groupsize,
+                 weight.scale = T,
+                 label.edge = F,
+                 title.name = "Number of interactions")
+dev.off()
+pdf("./细胞通讯整体//wt_cellchat_weight.pdf", width = 10, height = 7)
+par(mfrow=c(1,1),xpd=T)
+netVisual_circle(con_cellchat@net$weight,
+                 vertex.weight = groupsize,
+                 weight.scale = T,
+                 label.edge = F,
+                 title.name = "Interaction weights/strength")
+dev.off()
+
+#####细胞通讯差异
+cellchat.NL <- updateCellChat(con_cellchat) 
+cellchat.LS <- updateCellChat(ko_cellchat)
+
+object.list <- list(NL = cellchat.NL, 
+                    LS = cellchat.LS) #对照组(NL)在前，比较组(LS)在后
+
+i=1
+object.list[[i]] <- netAnalysis_computeCentrality(object.list[[i]], slot.name = "netP")
+object.list[[i+1]] <- netAnalysis_computeCentrality(object.list[[i+1]], slot.name = "netP")
+
+cellchat <- mergeCellChat(object.list, add.names = names(object.list))
+
+# library(cols4all)
+# cc_cols <- c4a("new_kingdom",2)
+cc_cols <- c("#9EB4E0","#E1846C")
+p1 <- compareInteractions(cellchat, show.legend = F, group = c(1,2))+ scale_fill_manual(values = cc_cols)
+p2 <- compareInteractions(cellchat, show.legend = F, group = c(1,2), measure = "weight")+ scale_fill_manual(values = cc_cols)
+pdf("./细胞通讯整体/compareInteractions_number_weight.pdf", width = 8, height = 5)
+p1 + p2
+dev.off()
+
+# pdf("./细胞通讯整体/differential_cir_num.pdf", width = 8, height = 7)
+# par(mfrow = c(1,1), xpd = TRUE)
+# netVisual_diffInteraction(cellchat, weight.scale = T)
+# netVisual_diffInteraction(cellchat, weight.scale = T, measure = "weight")
+# dev.off()
+# table(merged_data$group,merged_data$Celltype)
+
+p3<- netVisual_heatmap(cellchat)
+p4<- netVisual_heatmap(cellchat, measure = "weight")
+
+pdf("./细胞通讯整体/differential_heatmap2.pdf", width = 12, height = 7)
+p3+p4
+dev.off()
+# + scale_fill_manual(values = cc_cols)
+cc_cols <- c("#E1846C","#9EB4E0")
+p5<- rankNet(cellchat, mode = "comparison", stacked = T, do.stat = TRUE)+scale_fill_manual(values = cc_cols)
+p6<- rankNet(cellchat, mode = "comparison", stacked = F, do.stat = TRUE)+scale_fill_manual(values = cc_cols)
+pdf("./细胞通讯整体/differential_pathway2.pdf", width = 12, height = 10)
+p5+ p6
+dev.off()
+
+
+###incoming
+ht5= netAnalysis_signalingRole_heatmap(object.list[[i]], 
+                                       pattern= "outgoing", #总体 "incoming" "outgoing" all
+                                       signaling= pathway.union, ##
+                                       title= names(object.list)[i], 
+                                       width= 12, height = 20)## "GnBu" "OrRd"
+ht6= netAnalysis_signalingRole_heatmap(object.list[[i+1]], 
+                                       pattern= "outgoing", #总体
+                                       signaling= pathway.union, ##
+                                       title= names(object.list)[i+1], 
+                                       width= 12, height = 20) ##, color.heatmap = "GnBu"
+ht5+ht6
+pdf("./细胞通讯整体/differential_all_pathway_发出信号.pdf", width = 12, height = 8)
+ht5+ht6
+dev.off()
+
+#####
+ht7= netAnalysis_signalingRole_heatmap(object.list[[i]], 
+                                       pattern= "incoming", #总体 "incoming" "outgoing" all 
+                                       signaling= pathway.union, 
+                                       title= names(object.list)[i], 
+                                       width= 12, height = 20, 
+                                       color.heatmap = "GnBu")## "GnBu" "OrRd"
+ht8= netAnalysis_signalingRole_heatmap(object.list[[i+1]], 
+                                       pattern= "incoming", #总体
+                                       signaling= pathway.union, 
+                                       title= names(object.list)[i+1], 
+                                       width= 12, height = 20, 
+                                       color.heatmap = "GnBu")
+ht7+ht8
+pdf("./细胞通讯整体/differential_all_pathway_接收信号.pdf", width = 12, height = 8)
+ht7+ht8
+dev.off()
+
+##
+ht7= netAnalysis_signalingRole_heatmap(object.list[[i+1]], 
+                                       pattern= "all", #总体 "incoming" "outgoing"
+                                       signaling= pathway.union, 
+                                       title= names(object.list)[i], 
+                                       width= 12, height = 20, 
+                                       color.heatmap = "OrRd")## "GnBu" "OrRd"
+ht8= netAnalysis_signalingRole_heatmap(object.list[[i+1]], 
+                                       pattern= "all", #总体
+                                       signaling= pathway.union, 
+                                       title= names(object.list)[i+1], 
+                                       width= 12, height = 20, 
+                                       color.heatmap = "OrRd")
+ht7+ht8
+pdf("./细胞通讯整体/differential_pathway_整体信号.pdf", width = 12, height = 8)
+ht7+ht8
+dev.off()
+
+#####配受体
+levels(cellchat@idents$joint) #查看细胞亚群
+res <- netVisual_bubble(cellchat, 
+                        sources.use = c(1:15), 
+                        targets.use = c(1:15),
+                        comparison= c(1,2), 
+                        angle.x = 45)  
+
+p7 <- netVisual_bubble(cellchat, 
+                       sources.use = c(12,15), 
+                       targets.use = c(15,24),
+                       comparison= c(1,2), 
+                       max.dataset = 2, 
+                       title.name = "Increased signaling in KO", 
+                       angle.x = 90, 
+                       remove.isolate = T)#+coord_flip()#Increased为比较组通讯概率更强的配受体对信息
+p7
+p8<- netVisual_bubble(cellchat, 
+                      sources.use = c(14:18), 
+                      targets.use = c(13),
+                      max.dataset = 1, 
+                      title.name = "Decreased signaling in KO", 
+                      angle.x = 90, 
+                      remove.isolate = F) #Decreased为对照组通讯概率更强的配受体对信息
+p7+ p8
