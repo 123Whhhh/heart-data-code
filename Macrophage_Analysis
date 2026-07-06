@@ -1,0 +1,56 @@
+library(Seurat)
+library(SeuratObject)
+library(dplyr)
+library(patchwork)
+library(ggplot2)
+library(RColorBrewer)
+library(clustree)
+library(harmony)
+library(scDblFinder)
+library(SingleCellExperiment) 
+library(rio)
+###### 
+sc_data <- import("./scdata")
+mac <-  subset(sc_data,subset=celltype == "Mac")
+mac <- NormalizeData(mac, normalization.method = "LogNormalize")
+mac <- FindVariableFeatures(mac, selection.method = "vst", nfeatures = 2000)##3000
+mac <- ScaleData(mac)
+mac <- RunPCA(mac, features = VariableFeatures(object = mac))
+ElbowPlot(mac, ndims = 50)
+mac <- FindNeighbors(mac, dims = 1:10, verbose = TRUE)# 36 20
+resolution <- seq(0.1,1,0.1)
+mac <- FindClusters(mac,
+                    resolution = resolution,
+                    verbose = TRUE)
+#####
+clustree(mac@meta.data, prefix = "RNA_snn_res.")
+mac <- FindClusters(mac, resolution = 0.3)
+mac <- RunUMAP(mac, dims = 1:10)
+DimPlot(mac, reduction = "umap", group.by = c("group","seurat_clusters"),label = T,raster = F)
+##
+Idents(mac) <- "seurat_clusters"
+marker_mac <-FindAllMarkers(mac, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+marker_mac <- subset(marker_mac,marker_mac$p_val_adj<=0.05&marker_mac$avg_log2FC>0.5)
+marker_mac_sorted <- marker_mac %>%
+  group_by(cluster) %>%
+  arrange(desc(avg_log2FC), .by_group = TRUE) %>%
+  ungroup()
+table(marker_mac$cluster)
+marker_mac_sorted$diff_pct <- marker_mac_sorted$pct.1-marker_mac_sorted$pct.2
+marker_mac_sorted  <- subset(marker_mac_sorted,marker_mac_sorted$diff_pct>0)
+
+
+##
+mac@meta.data$Celltype <- mac@meta.data$seurat_clusters
+mac@meta.data$Celltype <- ifelse(mac@meta.data$seurat_clusters %in% c("0"),"Mac_Repair", mac@meta.data$Celltype)
+mac@meta.data$Celltype <- ifelse(mac@meta.data$seurat_clusters %in% c("1","2"),"Mac_M1",mac@meta.data$Celltype)
+mac@meta.data$Celltype <- ifelse(mac@meta.data$seurat_clusters %in% c("3"),"Mac_Pecam1+",mac@meta.data$Celltype)
+mac@meta.data$Celltype <- ifelse(mac@meta.data$seurat_clusters %in% c("4"),"Mac_Dcn+",mac@meta.data$Celltype)
+mac@meta.data$Celltype <- ifelse(mac@meta.data$seurat_clusters %in% c("5"),"Mac_Spp1+",mac@meta.data$Celltype)
+mac@meta.data$Celltype <- ifelse(mac@meta.data$seurat_clusters %in% c("6"),"Mac_Cycling",mac@meta.data$Celltype)
+mac@meta.data$Celltype <- ifelse(mac@meta.data$seurat_clusters %in% c("7"),"Mac_Ly6c+",mac@meta.data$Celltype)
+DimPlot(mac, reduction = "umap", group.by = "Celltype",cols = col,label = F,raster = F)
+
+
+
+
