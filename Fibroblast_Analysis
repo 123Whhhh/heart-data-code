@@ -1,0 +1,42 @@
+fib <-  subset(sc_data,subset=celltype == "Fibroblast")
+fib <- NormalizeData(fib, normalization.method = "LogNormalize")
+fib <- FindVariableFeatures(fib, selection.method = "vst", nfeatures = 2000)
+fib <- ScaleData(fib)
+fib <- RunPCA(fib, features = VariableFeatures(object = fib))
+# ElbowPlot(fib, ndims = 50)
+fib <- FindNeighbors(fib, dims = 1:12, verbose = TRUE)##36
+resolution <- seq(0.1,1,0.1)
+fib <- FindClusters(fib,
+                    resolution = resolution,
+                    verbose = TRUE)
+# 
+clustree(fib@meta.data, prefix = "RNA_snn_res.")
+fib <- FindClusters(fib, resolution = 0.1)
+fib <- RunUMAP(fib, dims = 1:12)
+DimPlot(fib, reduction = "umap", group.by = c("group","seurat_clusters"),label = F,raster = F)
+##
+fib@meta.data$Celltype <- fib@meta.data$seurat_clusters
+fib@meta.data$Celltype <- ifelse(fib@meta.data$seurat_clusters %in% c("0"),"Fibroblast_C0", fib@meta.data$Celltype)
+fib@meta.data$Celltype <- ifelse(fib@meta.data$seurat_clusters %in% c("1"),"Fibroblast_C1",fib@meta.data$Celltype)
+fib@meta.data$Celltype <- ifelse(fib@meta.data$seurat_clusters %in% c("2"),"Fibroblast_C2",fib@meta.data$Celltype)
+
+fib_color <- c("#FFAABB", "#99DDFF" ,"#44BB99")
+group_color=setNames(fib_color,
+                     c("Fibroblast_C0","Fibroblast_C1","Fibroblast_C2"))
+pic <- DimPlot(fib, reduction = "umap",split.by = "group",cols = group_color,label = F,raster = F)
+
+#####
+C0 <- c( "Tnfaip6","Fn1", "Serpinh1", "Col1a1", "Col1a2", "Col3a1", "Col5a1", "Col14a1") # 炎症环境下的激活态，管周成纤维(ECM重塑与基质组织重塑) 
+C1 <-c("Tgfb1", "Timp4", "Tagln2", "Kdr", "Pecam1", "Cdh5") # 过渡状态
+C2 <- c("Acta2", "Tagln", "Postn") # 肌成纤维
+mar <- c(C0,C1,C2,C3)
+pic <- DotPlot(fib,
+               group.by = 'Celltype',
+               features = unique(mar),
+               cluster.idents = FALSE,
+               assay = 'RNA',
+               col.min = 0) +
+  scale_color_gradientn(colours = c('#330066','#336699','#66CC66','#FFCC33')) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+pic
+
