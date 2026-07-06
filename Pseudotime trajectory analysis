@@ -1,1 +1,135 @@
+library(Seurat)
+library(monocle)
+library(dplyr)
+library(ggplot2)
+####Mac
+# mac2 <- subset(mac,subset=Celltype %in% c("Mac_M1","Mac_Spp1+","Mac_Ly6c+"))
+Idents(mac2) <- "Celltype"
+marker_mac <-FindAllMarkers(mac2, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+marker_mac <- subset(marker_mac,marker_mac$p_val_adj<=0.05&marker_mac$avg_log2FC>0.5)
+marker_mac_sorted <- marker_mac %>%
+  group_by(cluster) %>%
+  arrange(desc(avg_log2FC), .by_group = TRUE) %>%
+  ungroup()
+marker_mac_sorted <- subset(marker_mac_sorted,marker_mac_sorted$p_val_adj<=0.05)
+expression_matrix <- as(as.matrix(GetAssayData(mac2, assay = "RNA", layer = "counts")), "sparseMatrix")
+cell_metadata <- new("AnnotatedDataFrame", data = endo@meta.data)
+gene_annotation <- new("AnnotatedDataFrame",
+                       data = data.frame(gene_short_name = row.names(endo), row.names = row.names(endo)))
+cds <- newCellDataSet(
+  expression_matrix,
+  phenoData = cell_metadata,
+  featureData = gene_annotation,
+  lowerDetectionLimit = 0.5,
+  expressionFamily = negbinomial.size()
+)
+cds <- estimateSizeFactors(cds)
+cds <- estimateDispersions(cds)
+cds <- detectGenes(cds, min_expr=0.1)
+expressed_genes <- row.names(subset(fData(cds), num_cells_expressed >= 10))
+diff_test_res <- differentialGeneTest(
+  cds[expressed_genes,],
+  fullModelFormulaStr = "~Celltype",
+  relative_expr = TRUE, cores = 6
+)
 
+# 显著基因作为轨迹基因
+ordering_genes <- row.names(subset(diff_test_res, qval < 0.01))
+library(rio)
+ordering <- intersect(ordering_genes,marker_mac_sorted$gene)
+cds <- setOrderingFilter(cds, ordering)
+cds <- setOrderingFilter(cds, ordering_genes)
+#===================== 降维 + 拟时序排序 =====================#
+cds <- reduceDimension(cds, max_components=2, reduction_method = 'DDRTree', verbose = F)
+##mycds  
+cds <- orderCells(cds)
+#####
+mac_color <- c("#386CB0","#F0027F" , "#7FC97F" ,"#FDC086" ,"#BEAED4" )
+group_col <- setNames(mac_color,unique(mac$Celltype))
+
+pdf("./mac/Pseudotime_mac.pdf",width = 6,height = 4)
+plot_cell_trajectory(cds, color_by = "Pseudotime")+
+  theme(legend.position = "right")
+dev.off()
+
+pdf("./mac/Celltype_mac.pdf",width = 6,height = 4)
+plot_cell_trajectory(cds, color_by = "Celltype")+
+  theme(legend.position = "right")+
+scale_color_manual(
+    values = mac_color
+  )
+dev.off()
+
+#######endo&fib
+# target_celltypes <- c("VasEC_C0",  "Fibroblast_C0", "VasEC_C1", 
+                       "Fibroblast_C2", " "VasEC_C2", "Fibroblast_C1")
+# ec_fib <- subset(sc_data, Celltype %in% target_celltypes)
+Idents(ec_fib) <- "Celltype"
+marker_mac <-FindAllMarkers(ec_fib, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+marker_mac <- subset(marker_mac,marker_mac$p_val_adj<=0.05&marker_mac$avg_log2FC>0.5)
+marker_mac_sorted <- marker_mac %>%
+  group_by(cluster) %>%
+  arrange(desc(avg_log2FC), .by_group = TRUE) %>%
+  ungroup()
+marker_mac_sorted <- subset(marker_mac_sorted,marker_mac_sorted$p_val_adj<=0.05)
+
+expression_matrix <- as(as.matrix(GetAssayData(ec_fib, assay = "RNA", layer = "counts")), "sparseMatrix")
+cell_metadata <- new("AnnotatedDataFrame", data = endo@meta.data)
+gene_annotation <- new("AnnotatedDataFrame",
+                       data = data.frame(gene_short_name = row.names(endo), row.names = row.names(endo)))
+cds <- newCellDataSet(
+  expression_matrix,
+  phenoData = cell_metadata,
+  featureData = gene_annotation,
+  lowerDetectionLimit = 0.5,
+  expressionFamily = negbinomial.size()
+)
+cds <- estimateSizeFactors(cds)
+cds <- estimateDispersions(cds)
+cds <- detectGenes(cds, min_expr=0.1)
+expressed_genes <- row.names(subset(fData(cds), num_cells_expressed >= 10))
+diff_test_res <- differentialGeneTest(
+  cds[expressed_genes,],
+  fullModelFormulaStr = "~Celltype",
+  relative_expr = TRUE, cores = 6
+)
+
+# 显著基因作为轨迹基因
+ordering_genes <- row.names(subset(diff_test_res, qval < 0.01))
+library(rio)
+ordering <- intersect(ordering_genes,marker_mac_sorted$gene)
+cds <- setOrderingFilter(cds, ordering)
+cds <- setOrderingFilter(cds, ordering_genes)
+#===================== 降维 + 拟时序排序 =====================#
+cds <- reduceDimension(cds, max_components=2, reduction_method = 'DDRTree', verbose = F)
+##mycds  
+cds <- orderCells(cds)
+#####
+pdf("./拟时序结果/Pseudotime_vas_fib.pdf",width = 6,height = 4)
+plot_cell_trajectory(cds, color_by = "Pseudotime")+
+  theme(legend.position = "right")
+dev.off()
+
+mycol <- c( "#FFAABB", "#99DDFF" ,"#44BB99","#77AADD" ,"#EE8866", "#EEDD88")
+group_col <- setNames(mac_color,unique(mac$Celltype))
+
+pdf("./拟时序结果/Celltype_vas_fib.pdf",width = 6,height = 4)
+plot_cell_trajectory(cds, color_by = "Celltype")+
+  theme(legend.position = "right")+
+scale_color_manual(
+    values = mycol
+  )
+dev.off()
+
+
+######密度图
+library(ggridges)
+df <- pData(cds)
+ggplot(df, aes(x=Pseudotime,y=Celltype, colour = Celltype, fill=Celltype)) +
+  geom_density_ridges()+
+  ggpubr::theme_classic2()+
+  scale_y_discrete(expand = c(0,0.05))+
+  scale_fill_manual(values = mycol)+
+  scale_color_manual(values = mycol)+
+  labs(y="") -> p
+p
