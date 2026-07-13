@@ -1,1 +1,451 @@
+#####ST data deal 
+library(mistyR)
+library(spacexr)
+library(dplyr)
+library(Seurat)
+library(SeuratObject)
+library(rio)
+source("/home/data/t110633/Jobs/plot_code/bamaike.R")
+source("/home/data/t110633/Jobs/SCdata/heart/CreateBmkObject_v2 .R")
+con_data <- CreateBmkObject(
+  matrix_path = "/home/data/t110633/Jobs/SCdata/heart/空转数据/BP2/L3_heAuto/",  #矩阵文件目录
+  png_path = "/home/data/t110633/Jobs/SCdata/heart/空转数据/BP2/he_roi_small_wt.png",    #png格式图片路径
+  min.cells = 5,       #一个基因至少在n个细胞中表达才被保留，可自行调整，默认值5
+  min.features = 100,  #一个细胞至少有n个基因才被保留，可自行调整，默认值100
+  type = "S1000"      #数据类型，必须指定，可选参数有'S1000', 'S2000', 'S3000', 'cell_split'
+  )
+head(con_data)
+#saveRDS(con_data,file = './空转/conL3.rds')
+ko_data <- CreateBmkObject(
+  matrix_path = "/home/data/t110633/Jobs/SCdata/heart/空转数据/BP1/L3_heAuto/",  #矩阵文件目录
+  png_path = "/home/data/t110633/Jobs/SCdata/heart/空转数据/BP1/he_roi_small3.png",    #png格式图片路径
+  min.cells = 5,       #一个基因至少在n个细胞中表达才被保留，可自行调整，默认值5
+  min.features = 100,  #一个细胞至少有n个基因才被保留，可自行调整，默认值100
+  type = "S1000"       #数据类型，必须指定，可选参数有'S1000', 'S2000', 'S3000', 'cell_split'
+)
+#saveRDS(ko_data,file = './空转/koL3.rds')
+library(spacexr)
+library(Seurat)
+library(rio)
+sc_data <- import("/home/data/t110633/Jobs/SCdata/heart/心脏/心脏/ABHD5_7week_CD.qs")
+####RCTD反卷积
+.get_counts <- function(obj, assay_name) {
+  # 先试 v5
+  x <- tryCatch(
+    GetAssayData(object = obj, assay = assay_name, slot = "counts"),
+    error = function(e) NULL
+  )
+  if (!is.null(x)) return(x)
+  # 回退 v4
+  x <- tryCatch(
+    GetAssayData(object = obj, assay = assay_name, slot = "counts"),
+    error = function(e) NULL
+  )
+  if (!is.null(x)) return(x)
+  stop(sprintf("无法从 assay '%s' 读取 counts（既不是 v5 layer 也不是 v4 slot）。", assay_name))
+}
 
+# ---- 选择并标准化坐标为两列(x, y) ----
+.pick_coords_xy <- function(coords_df) {
+  cand <- list(
+    c("row","col"),
+    c("x","y"),
+    c("imagerow","imagecol")
+  )
+  sel <- NULL
+  for (cn in cand) {
+    if (all(cn %in% colnames(coords_df))) { sel <- cn; break }
+  }
+  if (is.null(sel)) {
+    stop("在 image@coordinates 中没有找到可用的坐标列（期望 row/col 或 x/y 或 imagerow/imagecol）")
+  }
+  xy <- coords_df[, sel, drop = FALSE]
+  colnames(xy) <- c("x","y")  # 统一成 x/y，RCTD 更稳
+  xy
+}
+
+run_rctd_and_annotate <- function(st_obj, reference, doublet_mode = "full", max_cores = 1,
+                                  spatial_assay = "Spatial") {
+  # 1) 取原始 count（兼容 Seurat v4/v5）
+  # st_obj  <- con_data
+  # reference <- reference
+  # doublet_mode = "doublet"
+  # max_cores = 6
+  # spatial_assay = "Spatial"
+  spatial_count <- .get_counts(st_obj, spatial_assay)
+  
+  # 2) 取坐标（默认第一个 image）
+  if (length(st_obj@images) < 1) stop("该 ST 对象没有 images。")
+  img_key <- names(st_obj@images)[1]
+  coords_raw <- st_obj@images[[img_key]]@coordinates
+  coords <- .pick_coords_xy(coords_raw)
+  
+  # 3) 确保坐标的行名与 spot 名一致；必要时对齐顺序/交集
+  spot_names <- colnames(spatial_count)
+  if (is.null(rownames(coords))) rownames(coords) <- rownames(coords_raw)
+  # 若行名不是 spot 名，就尝试强制对齐到 counts 的列名
+  if (!all(rownames(coords) %in% spot_names)) {
+    # 有时 coordinates 的行名恰好也是 spot 名；若不是，直接用 spot_names 覆盖
+    rownames(coords) <- spot_names[seq_len(nrow(coords))]
+  }
+  # 只保留交集且按 counts 列顺序重排
+  common <- intersect(rownames(coords), spot_names)
+  spatial_count <- spatial_count[, common, drop = FALSE]
+  coords <- coords[common, , drop = FALSE]
+  
+  # 4) 构建 query 并运行 RCTD
+  query <- SpatialRNA(coords, spatial_count)
+  rctd_obj <- create.RCTD(query, reference, max_cores = max_cores,CELL_MIN_INSTANCE = 10)
+  rctd_obj <- run.RCTD(rctd_obj, doublet_mode = doublet_mode)
+  # 5) 归一化权重并写回 ST 元数据
+  weights <- rctd_obj@results$weights
+  norm_weights <- normalize_weights(weights)
+  df <- as.data.frame(norm_weights)
+  for (col_name in colnames(df)) {
+    st_obj <- AddMetaData(st_obj, metadata = df[[col_name]], col.name = col_name)
+  }
+  results_df <- rctd_obj@results$results_df
+  for (col_name in colnames(results_df)) {
+    st_obj <- AddMetaData(st_obj, metadata = results_df[[col_name]], col.name = col_name)
+  }
+  return(list(st = st_obj, rctd = rctd_obj, weights = norm_weights))
+}
+# ----- 构建单细胞 reference（同样兼容 v4/v5） -----
+sc_counts <- .get_counts(sc_data, "RNA")
+celltypes <- as.factor(sc_data$Celltype)
+names(celltypes) <- colnames(sc_data)
+reference <- Reference(sc_counts, celltypes)
+
+# ----- 分别跑 con / ko -----
+###之前
+# res_ko_subtype <- run_rctd_and_annotate(ko_data, reference, doublet_mode = "doublet", max_cores = 5)
+# res_con_subtype <- run_rctd_and_annotate(con_data, reference, doublet_mode = "doublet", max_cores = 5)
+
+st_con <- res_con_subtype$st
+st_ko <- res_ko_subtype$st
+
+
+#####co-localization
+colnames(st_con@meta.data)
+coord <- GetTissueCoordinates(st_con, cols = c("imagecol", "imagerow"), scale = NULL)
+coord <- cbind(rownames(coord),coord)
+names(coord) <-  c("cellID","coord_x","coord_y")
+a <- st_con@meta.data
+a <- a[,c(1,31)]
+meta <- cbind(rownames(a),a)
+meta  <- meta[,-2]
+meta <- as.data.frame(meta)
+names(meta) <- c("cellID","cell_names")
+
+##合并并指定行名，删除特定列
+library(dplyr)
+library(tidyverse)
+df <- left_join(x = meta,y = coord,by = "cellID")
+rownames(df) <- df[,"cellID"]
+df <- df[,-1]
+df <- na.omit(df)
+coord_df <- df[,c("coord_x","coord_y")]
+meta_df <- df[,c("cell_names","coord_x","coord_y")]
+unique(meta_df$cell_names)
+##查看结果
+head(coord_df);head(meta_df)
+
+cell_count <- table(meta_df$cell_names)
+# 设定最小样本量阈值（建议至少5个，可根据需求调整）
+min_cell_num <- 1
+# 筛选出样本量足够的细胞类型
+valid_cell_names <- names(cell_count)[cell_count >= min_cell_num]
+cell_names <- sort(valid_cell_names)
+
+library(dbscan)
+# cell_names <- unique(meta_df[, "cell_names"]) %>% sort
+##########两两组合
+comb <- combn(cell_names,2)
+data <- NULL
+for(i in 1:ncol(comb)){
+  # 真实值估算
+  single_A <- meta_df %>% filter(cell_names == comb[,i][1]) %>% dplyr::select(coord_x, coord_y)
+  single_B <- meta_df %>% filter(cell_names == comb[,i][2]) %>% dplyr::select(coord_x, coord_y)
+  
+  nn = kNN(x = single_A, k = 1, query = single_B, search = "kdtree")
+  QB_DA_T = median(nn$dist)
+  
+  nn = kNN(x = single_B, k = 1, query = single_A, search = "kdtree")
+  QA_DB_T = median(nn$dist)
+  
+  # 随机抽样，用于p值计算
+  QB_DA_F <- NULL
+  QA_DB_F <- NULL
+  for(j in 1:1000){
+    sam_p = sample(x = 1:nrow(meta_df), size = nrow(single_A), replace = FALSE)
+    single_A_rand = meta_df[sort(sam_p),] %>% dplyr::select(coord_x, coord_y)
+    sam_p2 = sample(x = (1:nrow(meta_df))[! (1:nrow(meta_df) %in% sam_p)], size = nrow(single_B), replace = FALSE)
+    single_B_rand = meta_df[sort(sam_p2),] %>% dplyr::select(coord_x, coord_y)
+    
+    nn_rand = kNN(x = single_A_rand, k = 1, query = single_B_rand, search = "kdtree")
+    QB_DA = median(nn_rand$dist)
+    QB_DA_F <- append(QB_DA_F, QB_DA)
+    
+    nn_rand = kNN(x = single_B_rand, k = 1, query = single_A_rand, search = "kdtree")
+    QA_DB = median(nn_rand$dist)
+    QA_DB_F <- append(QA_DB_F, QA_DB)
+  }
+  
+  # 计算p值（校正）
+  rank_QB_DA = sum(QB_DA_F <= QB_DA_T) + 1
+  pvalue_QB_DA = rank_QB_DA / (1000 + 1)
+  
+  rank_QA_DB = sum(QA_DB_F <= QA_DB_T) + 1
+  pvalue_QA_DB = rank_QA_DB / (1000 + 1)
+  
+  # 构造结果数据框，增加距离列
+  tmp = data.frame(
+    Predictor = comb[,i][2],
+    Target = comb[,i][1],
+    Pvalue = pvalue_QB_DA,
+    MedianDist = QB_DA_T
+  )
+  data = rbind(tmp, data)
+  
+  tmp = data.frame(
+    Predictor = comb[,i][1],
+    Target = comb[,i][2],
+    Pvalue = pvalue_QA_DB,
+    MedianDist = QA_DB_T
+  )
+  data = rbind(tmp, data)
+}
+##结果保存
+export(data,file = "./共定位_wt.xlsx")
+# range(data$MedianDist)
+###st_ko
+coord <- GetTissueCoordinates(st_ko, cols = c("imagecol", "imagerow"), scale = NULL)
+coord <- cbind(rownames(coord),coord)
+names(coord) <-  c("cellID","coord_x","coord_y")
+a <- st_ko@meta.data
+a <- a[,c(1,31)]
+meta <- cbind(rownames(a),a)
+meta  <- meta[,-2]
+meta <- as.data.frame(meta)
+names(meta) <- c("cellID","cell_names")
+
+##合并并指定行名，删除特定列
+library(dplyr)
+library(tidyverse)
+df <- left_join(x = meta,y = coord,by = "cellID")
+rownames(df) <- df[,"cellID"]
+df <- df[,-1]
+df <- na.omit(df)
+coord_df <- df[,c("coord_x","coord_y")]
+meta_df <- df[,c("cell_names","coord_x","coord_y")]
+unique(meta_df$cell_names)
+##查看结果
+head(coord_df);head(meta_df)
+cell_count <- table(meta_df$cell_names)
+# 设定最小样本量阈值（建议至少5个，可根据需求调整）
+min_cell_num <- 1
+# 筛选出样本量足够的细胞类型
+valid_cell_names <- names(cell_count)[cell_count >= min_cell_num]
+cell_names <- sort(valid_cell_names)
+
+library(dbscan)
+# cell_names <- unique(meta_df[, "cell_names"]) %>% sort
+##########两两组合
+comb <- combn(cell_names,2)
+data <- NULL
+for(i in 1:ncol(comb)){
+  # 真实值估算
+  single_A <- meta_df %>% filter(cell_names == comb[,i][1]) %>% dplyr::select(coord_x, coord_y)
+  single_B <- meta_df %>% filter(cell_names == comb[,i][2]) %>% dplyr::select(coord_x, coord_y)
+  
+  nn = kNN(x = single_A, k = 1, query = single_B, search = "kdtree")
+  QB_DA_T = median(nn$dist)
+  
+  nn = kNN(x = single_B, k = 1, query = single_A, search = "kdtree")
+  QA_DB_T = median(nn$dist)
+  
+  # 随机抽样，用于p值计算
+  QB_DA_F <- NULL
+  QA_DB_F <- NULL
+  for(j in 1:1000){
+    sam_p = sample(x = 1:nrow(meta_df), size = nrow(single_A), replace = FALSE)
+    single_A_rand = meta_df[sort(sam_p),] %>% dplyr::select(coord_x, coord_y)
+    sam_p2 = sample(x = (1:nrow(meta_df))[! (1:nrow(meta_df) %in% sam_p)], size = nrow(single_B), replace = FALSE)
+    single_B_rand = meta_df[sort(sam_p2),] %>% dplyr::select(coord_x, coord_y)
+    
+    nn_rand = kNN(x = single_A_rand, k = 1, query = single_B_rand, search = "kdtree")
+    QB_DA = median(nn_rand$dist)
+    QB_DA_F <- append(QB_DA_F, QB_DA)
+    
+    nn_rand = kNN(x = single_B_rand, k = 1, query = single_A_rand, search = "kdtree")
+    QA_DB = median(nn_rand$dist)
+    QA_DB_F <- append(QA_DB_F, QA_DB)
+  }
+  
+  # 计算p值（校正）
+  rank_QB_DA = sum(QB_DA_F <= QB_DA_T) + 1
+  pvalue_QB_DA = rank_QB_DA / (1000 + 1)
+  
+  rank_QA_DB = sum(QA_DB_F <= QA_DB_T) + 1
+  pvalue_QA_DB = rank_QA_DB / (1000 + 1)
+  
+  # 构造结果数据框，增加距离列
+  tmp = data.frame(
+    Predictor = comb[,i][2],
+    Target = comb[,i][1],
+    Pvalue = pvalue_QB_DA,
+    MedianDist = QB_DA_T
+  )
+  data = rbind(tmp, data)
+  
+  tmp = data.frame(
+    Predictor = comb[,i][1],
+    Target = comb[,i][2],
+    Pvalue = pvalue_QA_DB,
+    MedianDist = QA_DB_T
+  )
+  data = rbind(tmp, data)
+}
+##结果保存
+export(data,file = "./共定位_ko.xlsx")
+
+library(rio)
+data <- import("./共定位_wt.xlsx")
+data <- import("./共定位_ko.xlsx")
+##绘制热图
+library(ComplexHeatmap)
+library(circlize)
+library(tidyverse)
+library(grid) 
+library(gground)
+library(corrplot)
+library(tidyr)
+library(dplyr)
+library(tidyverse)
+library(ComplexHeatmap)
+library(circlize)
+library(grid)
+
+col_fun <- colorRamp2(c(-2,0,2), c("#2872d1", "white", "#ff0d0d"))
+col_fun <- colorRamp2(c(-2,0,2), c("#13a075", "white", "#e69f03"))
+col_fun <- colorRamp2(c(-2,0,2), c("#B3A9EB", "white", "#ffa500"))
+col_fun <- colorRamp2(c(-2,0,2), c("#69AADB", "white", "#D45590"))
+col_fun <- colorRamp2(c(-2,0,2), c("#0f86a9", "white", "#FC8452"))
+col_fun <- colorRamp2(
+  breaks = c(0, 0.05, 1),         
+  colors = c("#B3A9EB", "white","grey" ) 
+)
+
+
+# 1. 准备MedianDist矩阵
+df_dist_wide <- data %>%
+  pivot_wider(
+    id_cols = Predictor,
+    names_from = Target,
+    values_from = MedianDist
+  )
+
+mat_dist <- df_dist_wide %>%
+  column_to_rownames(var = "Predictor") %>%
+  as.matrix()
+# NA填充，比如填充为NA（ComplexHeatmap默认灰色），或者你可以用某个值
+mat_dist[is.na(mat_dist)] <- NA
+
+# 2. 准备Pvalue矩阵
+df_pval_wide <- data %>%
+  pivot_wider(
+    id_cols = Predictor,
+    names_from = Target,
+    values_from = Pvalue
+  )
+
+mat_pval <- df_pval_wide %>%
+  column_to_rownames(var = "Predictor") %>%
+  as.matrix()
+
+mat_pval[is.na(mat_pval)] <- 1  # NA设为不显著
+
+# 3. 构建符号矩阵，用于绘制星号
+mat_symbol <- matrix("", nrow = nrow(mat_pval), ncol = ncol(mat_pval),
+                     dimnames = dimnames(mat_pval))
+
+mat_symbol[mat_pval < 0.05] <- "*"
+mat_symbol[mat_pval < 0.01] <- "**"
+mat_symbol[mat_pval < 0.001] <- "***"
+
+# 4. 配色函数, 你可以根据MedianDist实际范围调整这里
+range(data$MedianDist)
+breaks <- c(0,30,60)
+colors <- c("#D45590","white", "#69AADB")
+# colors <- c("#69AADB", "white", "#D45590")
+col_fun <- colorRamp2(breaks, colors)
+ # 5. 绘制热图
+a <- rownames(mat_dist)
+
+mat_dist <- mat_dist[a,a]
+pdf("./MedianDist_heatmap_with_significance_ko.pdf", width = 9, height = 9)
+# pdf("./MedianDist_heatmap_with_significance_wt.pdf", width = 9, height = 9)
+Heatmap(
+  mat_dist,
+  name = "MedianDist",
+  col = col_fun,
+  na_col = "grey90",        # NA显示为浅灰色
+  rect_gp = gpar(col = "white", lwd = 1),
+  width = ncol(mat_dist) * unit(6, "mm"),
+  height = nrow(mat_dist) * unit(6, "mm"),
+  row_names_gp = gpar(fontsize = 12),
+  column_names_gp = gpar(fontsize = 12),
+  column_names_rot = 45,
+  cluster_rows = F,
+  cluster_columns = F,
+  cell_fun = function(j, i, x, y, width, height, fill) {
+    # i 行号, j 列号
+    symbol <- mat_symbol[i, j]
+    if (symbol != "") {
+      grid.text(symbol, x = x, y = y, gp = gpar(fontsize = 12, fontface = "bold", col = "black"))
+    }
+  },
+  heatmap_legend_param = list(
+    title = "MedianDist",
+    title_gp = gpar(fontsize = 9),
+    labels_gp = gpar(fontsize = 7)
+  )
+)
+ dev.off()
+
+####
+cell_types <- c("Mac_Spp1+", "VasEC_C2","Fibroblast_C1")
+myyycol <- c("#F0027F","#44BB99" , "#386CB0" )  
+group_color=setNames(myyycol,
+                     cell_types)
+
+st_ko_subset <- subset(st_ko, subset = second_type %in% cell_types)
+st_wt_subset <- subset(st_con, subset = second_type %in% cell_types)
+p1 <- SpatialDimPlot(
+  st_wt_subset,crop = F,
+  group.by = "second_type",stroke = NA,#first_type  second_type
+  label = F,          # 显示细胞类型标签
+  pt.size.factor = 9,  # 控制点的大小，使空间分布更清晰
+  image.alpha = 0,cols = group_color)
+# p1
+p2 <- SpatialDimPlot(
+  st_ko_subset,
+  group.by = "second_type",
+  crop = F,stroke = NA,
+  label = F,          # 显示细胞类型标签
+  pt.size.factor = 9,  # 控制点的大小，使空间分布更清晰
+  image.alpha = 0,cols = group_color)+
+scale_x_continuous(expand = c(0,0), limits = c(0, 800))
+# p2
+
+p <- p1|p2
+p
+library(cowplot)
+p <- plot_grid(
+  p1, p2,
+  ncol = 2,
+  rel_widths = c(1, 1.04),
+  align = "hv"
+)
+p
+ggsave(plot = p, filename = "./空转/sub_celltype.pdf", width = 11, height = 10, dpi = 300)
