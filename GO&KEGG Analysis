@@ -1,24 +1,44 @@
+# ==============================================================================
+# GO & KEGG Functional Enrichment Analysis
+# Function: Perform GO-BP and KEGG enrichment on marker genes (mouse)
+# Dependencies: clusterProfiler, org.Mm.eg.db
+# Input: da: data frame containing marker gene column named "gene" (mouse symbol)
+# ==============================================================================
 library(clusterProfiler)
 library(org.Mm.eg.db)
-######GO
-## da: Marker gene list for cell subpopulations
-ego_up <- enrichGO(gene          = da$gene,
-                     OrgDb         = org.Mm.eg.db,
-                     keyType       = 'SYMBOL',
-                     ont           = "BP",
-                     pAdjustMethod = "BH",
-                     pvalueCutoff  = 0.05,
-                     qvalueCutoff  = 0.2,
-                     readable      = TRUE)
-  data <- ego_up@result
-  data <- subset(data,data$p.adjust<=0.05)
-######KEGG
-up_entrez <- bitr(da$gene, fromType = "SYMBOL", 
-                    toType = "ENTREZID", 
-                    OrgDb = org.Mm.eg.db)$ENTREZID
-  
-kk_up <- enrichKEGG(gene         = up_entrez,
-                      organism     = 'mmu',
-                      pvalueCutoff = 0.05)
-data_ke <- kk_up@result
-data_ke <- subset(data_ke,data_ke$p.adjust<=0.05)  
+# ===================== GO Biological Process Enrichment =====================
+ego_up <- enrichGO(
+  gene          = da$gene,
+  OrgDb         = org.Mm.eg.db,
+  keyType       = "SYMBOL",
+  ont           = "BP",
+  pAdjustMethod = "BH",
+  pvalueCutoff  = 0.05,
+  qvalueCutoff  = 0.2,
+  readable      = TRUE
+)
+
+# Filter significant GO terms (adjusted p-value < 0.05)
+go_result <- ego_up@result
+go_result_filter <- subset(go_result, go_result$p.adjust <= 0.05)
+
+# ===================== KEGG Pathway Enrichment =====================
+# Convert gene symbol to Entrez ID required by KEGG
+gene_bitr <- bitr(
+  da$gene,
+  fromType = "SYMBOL",
+  toType = "ENTREZID",
+  OrgDb = org.Mm.eg.db
+)
+up_entrez <- gene_bitr$ENTREZID
+
+# KEGG enrichment for mouse (mmu)
+kk_up <- enrichKEGG(
+  gene         = up_entrez,
+  organism     = "mmu",
+  pvalueCutoff = 0.05
+)
+
+# Filter significant KEGG pathways
+kegg_result <- kk_up@result
+kegg_result_filter <- subset(kegg_result, kegg_result$p.adjust <= 0.05)
