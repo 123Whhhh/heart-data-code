@@ -110,7 +110,7 @@ plot_signature_violin <- function(meta_df,
   return(p)
 }
 
-####示例
+####AUCell：Ferroptosis_AUC
 ferroptosis_genes <- ferroptosis_promote
 endo <- calc_signature_score(
   seurat_obj = endo,
@@ -119,22 +119,6 @@ endo <- calc_signature_score(
   score_method = "AUCell",
   n_cores = 1
 )
-plot_meta <- endo@meta.data
-
-# VasEC_C1，Control vs KO
-ec1_meta <- subset(plot_meta, Celltype == "VasEC_C1")
-p_ferro <- plot_signature_violin(
-  meta_df = ec1_meta,
-  celltype_col = "Celltype",
-  score_col = "Ferroptosis_AUC",
-  group_col = "group",
-  compare_list = list(c("Control", "Abhd5_KO")),
-  test_method = "t.test",
-  fill_by = "group",
-  color_palette = c("#8fc0dc", "#f9766e"),
-  y_lab = "Ferroptosis AUCell Score"
-)
-print(p_ferro)
 
 # EndMT AddModuleScore
 endmt_genes <- endmt_up_mouse
@@ -144,7 +128,6 @@ endo <- calc_signature_score(
   score_name = "EndMT_Module",
   score_method = "AddModuleScore"
 )
-
 plot_meta <- endo@meta.data
 # 
 plot_meta$Celltype <- factor(plot_meta$Celltype, levels = c("VasEC_C0","VasEC_C1","VasEC_C2"))
@@ -161,6 +144,20 @@ p_endmt <- plot_signature_violin(
 )
 print(p_endmt)
 
+# VasEC_C0，Control vs KO
+ec1_meta <- subset(plot_meta, Celltype == "VasEC_C0")
+p_ferro <- plot_signature_violin(
+  meta_df = ec1_meta,
+  celltype_col = "Celltype",
+  score_col = "Ferroptosis_AUC",
+  group_col = "group",
+  compare_list = list(c("Control", "Abhd5_KO")),
+  test_method = "t.test",
+  fill_by = "group",
+  color_palette = c("#8fc0dc", "#f9766e"),
+  y_lab = "Ferroptosis AUCell Score"
+)
+print(p_ferro)
 # 
 ggsave("./score_plot/Ferroptosis_VasEC0.pdf", p_ferro, width = 5, height = 5, dpi = 300)
 ggsave("./score_plot/EndMT_EC_subtype.pdf", p_endmt, width = 7, height = 5, dpi = 300)
