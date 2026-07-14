@@ -1,135 +1,147 @@
+# ==============================================================================
+# Pseudotime Trajectory Analysis (Monocle)
+# Function: Macrophage / Endothelial / Fibroblast pseudotime analysis & visualization
+# ==============================================================================
+# Load packages
 library(Seurat)
 library(monocle)
 library(dplyr)
 library(ggplot2)
-####Mac
-# mac2 <- subset(mac,subset=Celltype %in% c("Mac_M1","Mac_Spp1+","Mac_Ly6c+"))
-Idents(mac2) <- "Celltype"
-marker_mac <-FindAllMarkers(mac2, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
-marker_mac <- subset(marker_mac,marker_mac$p_val_adj<=0.05&marker_mac$avg_log2FC>0.5)
-marker_mac_sorted <- marker_mac %>%
-  group_by(cluster) %>%
-  arrange(desc(avg_log2FC), .by_group = TRUE) %>%
-  ungroup()
-marker_mac_sorted <- subset(marker_mac_sorted,marker_mac_sorted$p_val_adj<=0.05)
-expression_matrix <- as(as.matrix(GetAssayData(mac2, assay = "RNA", layer = "counts")), "sparseMatrix")
-cell_metadata <- new("AnnotatedDataFrame", data = endo@meta.data)
-gene_annotation <- new("AnnotatedDataFrame",
-                       data = data.frame(gene_short_name = row.names(endo), row.names = row.names(endo)))
-cds <- newCellDataSet(
-  expression_matrix,
-  phenoData = cell_metadata,
-  featureData = gene_annotation,
-  lowerDetectionLimit = 0.5,
-  expressionFamily = negbinomial.size()
-)
-cds <- estimateSizeFactors(cds)
-cds <- estimateDispersions(cds)
-cds <- detectGenes(cds, min_expr=0.1)
-expressed_genes <- row.names(subset(fData(cds), num_cells_expressed >= 10))
-diff_test_res <- differentialGeneTest(
-  cds[expressed_genes,],
-  fullModelFormulaStr = "~Celltype",
-  relative_expr = TRUE, cores = 6
-)
-
-# 显著基因作为轨迹基因
-ordering_genes <- row.names(subset(diff_test_res, qval < 0.01))
-library(rio)
-ordering <- intersect(ordering_genes,marker_mac_sorted$gene)
-cds <- setOrderingFilter(cds, ordering)
-cds <- setOrderingFilter(cds, ordering_genes)
-#===================== 降维 + 拟时序排序 =====================#
-cds <- reduceDimension(cds, max_components=2, reduction_method = 'DDRTree', verbose = F)
-##mycds  
-cds <- orderCells(cds)
-#####
-mac_color <- c("#386CB0","#F0027F" , "#7FC97F" ,"#FDC086" ,"#BEAED4" )
-group_col <- setNames(mac_color,unique(mac$Celltype))
-
-pdf("./mac/Pseudotime_mac.pdf",width = 6,height = 4)
-plot_cell_trajectory(cds, color_by = "Pseudotime")+
-  theme(legend.position = "right")
-dev.off()
-
-pdf("./mac/Celltype_mac.pdf",width = 6,height = 4)
-plot_cell_trajectory(cds, color_by = "Celltype")+
-  theme(legend.position = "right")+
-scale_color_manual(
-    values = mac_color
-  )
-dev.off()
-
-#######endo&fib
-# target_celltypes <- c("VasEC_C0",  "Fibroblast_C0", "VasEC_C1", 
-                       "Fibroblast_C2", " "VasEC_C2", "Fibroblast_C1")
-# ec_fib <- subset(sc_data, Celltype %in% target_celltypes)
-Idents(ec_fib) <- "Celltype"
-marker_mac <-FindAllMarkers(ec_fib, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
-marker_mac <- subset(marker_mac,marker_mac$p_val_adj<=0.05&marker_mac$avg_log2FC>0.5)
-marker_mac_sorted <- marker_mac %>%
-  group_by(cluster) %>%
-  arrange(desc(avg_log2FC), .by_group = TRUE) %>%
-  ungroup()
-marker_mac_sorted <- subset(marker_mac_sorted,marker_mac_sorted$p_val_adj<=0.05)
-
-expression_matrix <- as(as.matrix(GetAssayData(ec_fib, assay = "RNA", layer = "counts")), "sparseMatrix")
-cell_metadata <- new("AnnotatedDataFrame", data = endo@meta.data)
-gene_annotation <- new("AnnotatedDataFrame",
-                       data = data.frame(gene_short_name = row.names(endo), row.names = row.names(endo)))
-cds <- newCellDataSet(
-  expression_matrix,
-  phenoData = cell_metadata,
-  featureData = gene_annotation,
-  lowerDetectionLimit = 0.5,
-  expressionFamily = negbinomial.size()
-)
-cds <- estimateSizeFactors(cds)
-cds <- estimateDispersions(cds)
-cds <- detectGenes(cds, min_expr=0.1)
-expressed_genes <- row.names(subset(fData(cds), num_cells_expressed >= 10))
-diff_test_res <- differentialGeneTest(
-  cds[expressed_genes,],
-  fullModelFormulaStr = "~Celltype",
-  relative_expr = TRUE, cores = 6
-)
-
-# 显著基因作为轨迹基因
-ordering_genes <- row.names(subset(diff_test_res, qval < 0.01))
-library(rio)
-ordering <- intersect(ordering_genes,marker_mac_sorted$gene)
-cds <- setOrderingFilter(cds, ordering)
-cds <- setOrderingFilter(cds, ordering_genes)
-#===================== 降维 + 拟时序排序 =====================#
-cds <- reduceDimension(cds, max_components=2, reduction_method = 'DDRTree', verbose = F)
-##mycds  
-cds <- orderCells(cds)
-#####
-pdf("./拟时序结果/Pseudotime_vas_fib.pdf",width = 6,height = 4)
-plot_cell_trajectory(cds, color_by = "Pseudotime")+
-  theme(legend.position = "right")
-dev.off()
-
-mycol <- c( "#FFAABB", "#99DDFF" ,"#44BB99","#77AADD" ,"#EE8866", "#EEDD88")
-group_col <- setNames(mac_color,unique(mac$Celltype))
-
-pdf("./拟时序结果/Celltype_vas_fib.pdf",width = 6,height = 4)
-plot_cell_trajectory(cds, color_by = "Celltype")+
-  theme(legend.position = "right")+
-scale_color_manual(
-    values = mycol
-  )
-dev.off()
-
-
-######密度图
 library(ggridges)
-df <- pData(cds)
-ggplot(df, aes(x=Pseudotime,y=Celltype, colour = Celltype, fill=Celltype)) +
-  geom_density_ridges()+
-  ggpubr::theme_classic2()+
-  scale_y_discrete(expand = c(0,0.05))+
-  scale_fill_manual(values = mycol)+
-  scale_color_manual(values = mycol)+
-  labs(y="") -> p
-p
+library(rio)
+
+# ======================== Global Settings ========================
+# Create output dir (avoid path error)
+if(!dir.exists("./mac")) dir.create("./mac")
+if(!dir.exists("./pseudotime_result")) dir.create("./pseudotime_result")
+# ======================== 1. Macrophage Pseudotime Analysis ========================
+# Subset macrophage populations
+# mac2 <- subset(mac, subset = Celltype %in% c("Mac_M1","Mac_Spp1+","Mac_Ly6c+"))
+Idents(mac2) <- "Celltype"
+# Find cell-type specific markers
+marker_mac <- FindAllMarkers(mac2, 
+                             only.pos = TRUE, 
+                             min.pct = 0.25, 
+                             logfc.threshold = 0.25)
+
+marker_mac_filter <- marker_mac %>%
+  filter(p_val_adj <= 0.05 & avg_log2FC > 0.5) %>%
+  group_by(cluster) %>%
+  arrange(desc(avg_log2FC), .by_group = TRUE) %>%
+  ungroup()
+# Prepare monocle input
+expr_mat_mac <- as(as.matrix(GetAssayData(mac2, assay = "RNA", layer = "counts")), "sparseMatrix")
+pd_mac <- new("AnnotatedDataFrame", data = mac2@meta.data)
+fd_mac <- new("AnnotatedDataFrame",
+              data = data.frame(gene_short_name = rownames(mac2), row.names = rownames(mac2)))
+
+# Build CDS
+cds_mac <- newCellDataSet(
+  expr_mat_mac,
+  phenoData = pd_mac,
+  featureData = fd_mac,
+  lowerDetectionLimit = 0.5,
+  expressionFamily = negbinomial.size()
+)
+
+cds_mac <- estimateSizeFactors(cds_mac)
+cds_mac <- estimateDispersions(cds_mac)
+cds_mac <- detectGenes(cds_mac, min_expr = 0.1)
+
+expressed_genes_mac <- row.names(subset(fData(cds_mac), num_cells_expressed >= 10))
+diff_test_mac <- differentialGeneTest(
+  cds_mac[expressed_genes_mac,],
+  fullModelFormulaStr = "~Celltype",
+  relative_expr = TRUE, 
+  cores = 6
+)
+
+# Trajectory genes
+ordering_genes_mac <- row.names(subset(diff_test_mac, qval < 0.01))
+ordering_mac <- intersect(ordering_genes_mac, marker_mac_filter$gene)
+cds_mac <- setOrderingFilter(cds_mac, ordering_mac)
+
+# Dimension reduction & pseudotime ordering
+cds_mac <- reduceDimension(cds_mac, max_components = 2, reduction_method = "DDRTree", verbose = FALSE)
+cds_mac <- orderCells(cds_mac)
+
+# Macrophage color palette
+mac_color <- c("#386CB0","#F0027F","#7FC97F","#FDC086","#BEAED4")
+
+# Plot pseudotime trajectory
+pdf("./mac/Pseudotime_mac.pdf", width = 6, height = 4)
+plot_cell_trajectory(cds_mac, color_by = "Pseudotime") +
+  theme(legend.position = "right")
+dev.off()
+
+pdf("./mac/Celltype_mac.pdf", width = 6, height = 4)
+plot_cell_trajectory(cds_mac, color_by = "Celltype") +
+  theme(legend.position = "right") +
+  scale_color_manual(values = mac_color)
+dev.off()
+
+# ======================== 2. Endothelial & Fibroblast Pseudotime ========================
+Idents(ec_fib) <- "Celltype"
+# Marker detection
+marker_ecfib <- FindAllMarkers(ec_fib, 
+                               only.pos = TRUE, 
+                               min.pct = 0.25, 
+                               logfc.threshold = 0.25)
+
+marker_ecfib_filter <- marker_ecfib %>%
+  filter(p_val_adj <= 0.05 & avg_log2FC > 0.5) %>%
+  group_by(cluster) %>%
+  arrange(desc(avg_log2FC), .by_group = TRUE) %>%
+  ungroup()
+# Correct metadata: use ec_fib metadata (fixed your critical bug)
+expr_mat_ecfib <- as(as.matrix(GetAssayData(ec_fib, assay = "RNA", layer = "counts")), "sparseMatrix")
+pd_ecfib <- new("AnnotatedDataFrame", data = ec_fib@meta.data)
+fd_ecfib <- new("AnnotatedDataFrame",
+                data = data.frame(gene_short_name = rownames(ec_fib), row.names = rownames(ec_fib)))
+cds_ecfib <- newCellDataSet(
+  expr_mat_ecfib,
+  phenoData = pd_ecfib,
+  featureData = fd_ecfib,
+  lowerDetectionLimit = 0.5,
+  expressionFamily = negbinomial.size()
+)
+cds_ecfib <- estimateSizeFactors(cds_ecfib)
+cds_ecfib <- estimateDispersions(cds_ecfib)
+cds_ecfib <- detectGenes(cds_ecfib, min_expr = 0.1)
+expressed_genes_ecfib <- row.names(subset(fData(cds_ecfib), num_cells_expressed >= 10))
+diff_test_ecfib <- differentialGeneTest(
+  cds_ecfib[expressed_genes_ecfib,],
+  fullModelFormulaStr = "~Celltype",
+  relative_expr = TRUE, 
+  cores = 6
+)
+ordering_genes_ecfib <- row.names(subset(diff_test_ecfib, qval < 0.01))
+ordering_ecfib <- intersect(ordering_genes_ecfib, marker_ecfib_filter$gene)
+cds_ecfib <- setOrderingFilter(cds_ecfib, ordering_ecfib)
+cds_ecfib <- reduceDimension(cds_ecfib, max_components = 2, reduction_method = "DDRTree", verbose = FALSE)
+cds_ecfib <- orderCells(cds_ecfib)
+# EC/Fib color palette
+ecfib_color <- c("#FFAABB","#99DDFF","#44BB99","#77AADD","#EE8866","#EEDD88")
+# Trajectory plot
+pdf("./pseudotime_result/Pseudotime_vas_fib.pdf", width = 6, height = 4)
+plot_cell_trajectory(cds_ecfib, color_by = "Pseudotime") +
+  theme(legend.position = "right")
+dev.off()
+pdf("./pseudotime_result/Celltype_vas_fib.pdf", width = 6, height = 4)
+plot_cell_trajectory(cds_ecfib, color_by = "Celltype") +
+  theme(legend.position = "right") +
+  scale_color_manual(values = ecfib_color)
+dev.off()
+# ======================== 3. Pseudotime Density Ridge Plot ========================
+df_ridge <- pData(cds_ecfib)
+ridge_plot <- ggplot(df_ridge, aes(x = Pseudotime, y = Celltype, colour = Celltype, fill = Celltype)) +
+  geom_density_ridges() +
+  ggpubr::theme_classic2() +
+  scale_y_discrete(expand = c(0, 0.05)) +
+  scale_fill_manual(values = ecfib_color) +
+  scale_color_manual(values = ecfib_color) +
+  labs(y = "")
+print(ridge_plot)
+pdf("./pseudotime_result/Pseudotime_Density_Ridge.pdf", width = 7, height = 5)
+print(ridge_plot)
+dev.off()
