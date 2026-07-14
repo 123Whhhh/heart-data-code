@@ -1,39 +1,95 @@
-#######mac→endo/fib
-mac$Group  <-  ifelse(mac$group=="Control","WT","KO")
-mac$Group <- factor(mac$Group,levels = c("WT","KO"))
+# ==============================================================================
+# Title: Cell proportion alluvial sankey plot for sc_data/mac/endo/fib  subpopulations
+# Dependencies: ggplot2, ggalluvial
+# Function: Calculate cell type ratio between WT / KO groups & draw alluvial plot
+# Input metadata: seurat object metadata (mac) contains columns: group, Celltype
+# Output: publication-quality sankey figure + high-res PDF/PNG files
+# ==============================================================================
+
+# 0. Environment initialization & package installation
+rm(list = ls())
+gc()
+
+# Auto install & load required packages
+if (!require("ggplot2")) install.packages("ggplot2")
+if (!require("ggalluvial")) install.packages("ggalluvial")
+library(ggplot2)
+library(ggalluvial)
+
+# 1. Global adjustable parameters (unified journal style)
+## Publication color palette (Cell Metabolism standard soft colors)
+group_col <- c(
+  "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+  "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"
+)
+text_size_axis <- 14
+text_size_legend <- 14
+plot_width <- 6
+plot_height <- 5
+plot_dpi <- 300
+
+# 2. Metadata preprocessing & cell proportion calculation
+## Rename group label: Control -> WT, others as KO
+mac$Group <- ifelse(mac$group == "Control", "WT", "KO")
+## Fix factor level to ensure consistent plotting order
+mac$Group <- factor(mac$Group, levels = c("WT", "KO"))
+
+## Calculate cell percentage within each group
 df_prop <- as.data.frame(prop.table(table(mac$Group, mac$Celltype), margin = 1))
 colnames(df_prop) <- c("Sample", "Celltype", "Ratio")
-#####堆砌桑基图
-library(ggalluvial)
-pic <- ggplot(df_prop, 
-              aes(x = Sample, 
-                  y = Ratio, 
-                  fill = Celltype, 
-                  stratum = Celltype, 
+
+# Print statistical table for data validation
+cat("=== Cell proportion statistics preview ===\n")
+print(df_prop)
+
+# 3. Plot function encapsulation for reproducibility
+plot_sankey_prop <- function(input_df, color_vec){
+  p <- ggplot(input_df,
+              aes(x = Sample,
+                  y = Ratio,
+                  fill = Celltype,
+                  stratum = Celltype,
                   alluvium = Celltype)) +
-  geom_flow(width = 0.5, 
-            alpha = 0.3, 
-            knot.pos = 0, 
-            color = 'white') +
-  geom_col(width = 0.5, 
-           color = 'white') +
-  scale_y_continuous(expand = c(0, 0)) +
-  # 使用指定的填充颜色
-  scale_fill_manual(values = group_col) +
-  # 坐标轴标签
-  xlab("") + 
-  ylab("Cell proportion") +
-  theme_classic() +
-  theme(
-    axis.text.x = element_text(angle = 75, 
-                               hjust = 1, 
-                               size = 14, 
-                               face = 'bold'),
-    axis.text.y = element_text(size = 14, 
-                               face = 'bold'),
-    axis.title.y = element_text(size = 14, 
-                                face = 'bold'),
-    legend.text = element_text(size = 14),
-    legend.title = element_text(size = 14)
-  )
-pic
+    geom_flow(width = 0.5, alpha = 0.3, knot.pos = 0, color = "white") +
+    geom_col(width = 0.5, color = "white") +
+    scale_y_continuous(expand = c(0, 0)) +
+    scale_fill_manual(values = color_vec) +
+    xlab("") +
+    ylab("Cell proportion") +
+    theme_classic() +
+    theme(
+      axis.text.x = element_text(angle = 75, hjust = 1, size = text_size_axis, face = "bold"),
+      axis.text.y = element_text(size = text_size_axis, face = "bold"),
+      axis.title.y = element_text(size = text_size_axis, face = "bold"),
+      legend.text = element_text(size = text_size_legend),
+      legend.title = element_text(size = text_size_legend),
+      plot.margin = margin(5, 5, 5, 5)
+    )
+  return(p)
+}
+
+# Generate figure
+pic <- plot_sankey_prop(df_prop, group_col)
+print(pic)
+
+# 4. Export high-resolution figure for manuscript submission
+## PNG raster figure for preview
+ggsave(
+  filename = "Macrophage_Cell_Proportion_Sankey.png",
+  plot = pic,
+  width = plot_width,
+  height = plot_height,
+  dpi = plot_dpi,
+  bg = "white"
+)
+
+## PDF vector figure (required by Cell Metabolism for official submission)
+ggsave(
+  filename = "Macrophage_Cell_Proportion_Sankey.pdf",
+  plot = pic,
+  width = plot_width,
+  height = plot_height,
+  device = "pdf"
+)
+
+cat("=== Plot finished! Figures saved in current working directory ===")
