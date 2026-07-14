@@ -1,74 +1,120 @@
-mycol<- c4a('light',6)
-endo <- subset(sc_data, subset = celltype %in% c("Vascular_EC"))
-#DimPlot(endo, reduction = "umap", group.by = "group", label = TRUE,raster = F)
-endo <- NormalizeData(endo, normalization.method = "LogNormalize")
-endo <- FindVariableFeatures(endo, selection.method = "vst", nfeatures = 2000)
-endo <- ScaleData(endo)
-endo <- RunPCA(endo, features = VariableFeatures(object = endo))
-ElbowPlot(endo, ndims = 50)
-endo <- FindNeighbors(endo, dims = 1:12 , verbose = TRUE) 
-resolution <- seq(0.1,1,0.1)
-endo <- FindClusters(endo,
-                     resolution = resolution,
-                     verbose = TRUE)
-clustree(endo@meta.data, prefix = "RNA_snn_res.")
-endo <- FindClusters(endo, resolution = 0.1)
-endo <- RunUMAP(endo, dims = 1:12)
-DimPlot(endo, reduction = "umap", group.by = c("group","seurat_clusters"),label = F,raster = F)
-table(endo$group,endo$seurat_clusters)
-endo@meta.data$Celltype <- endo@meta.data$seurat_clusters
-endo@meta.data$Celltype <- ifelse(endo@meta.data$seurat_clusters %in% c("0"),"VasEC_C0", endo@meta.data$Celltype)
-endo@meta.data$Celltype <- ifelse(endo@meta.data$seurat_clusters %in% c("1"),"VasEC_C1",endo@meta.data$Celltype)
-endo@meta.data$Celltype <- ifelse(endo@meta.data$seurat_clusters %in% c("2"),"VasEC_C2",endo@meta.data$Celltype)
-pic <- DimPlot(endo, reduction = "umap", group.by = "Celltype", cols = mycol,label = TRUE,raster = F)
-pic
-#####
-###Roe
+# ==============================================================================
+# Vascular Endothelial Cell Subclustering & ROE Distribution Heatmap
+# Workflow: Endothelial cell subset -> Seurat standard analysis -> subtype annotation
+#           Startrac R_o/e distribution heatmap + marker dotplot
+# Dependencies: Seurat, cols4all, clustree, Startrac, ComplexHeatmap, circlize
+# Input object: sc_data (integrated full seurat object)
+# ==============================================================================
+library(Seurat)
+library(cols4all)
+library(clustree)
 library(Startrac)
 library(ComplexHeatmap)
 library(circlize)
-in.dat  <- vas_flit@meta.data
-colnames(in.dat)
-R_oe <- calTissueDist(in.dat,
-                      byPatient = FALSE,
-                      colname.cluster = "Celltype",
-                      # colname.patient = "patient", 
-                      colname.tissue = "group",
-                      method = "chisq", 
-                      min.rowSum = 0)
-col_fun = colorRamp2(seq(0, 2, length = 3),c("#88CCEE", "#FFFFFF","#CC6677"))
-col_fun <- colorRamp2(seq(0, 2, length = 3),c("#E0F7FA", "#FFFFFF", "#FFCDD2"))
+
+# Custom color palette for endothelial subtypes
+ec_color_vec <- c4a('light', 6)
+# ===================== Step1: Subset vascular endothelial cells & Seurat preprocessing =====================
+endo <- subset(sc_data, subset = celltype %in% c("Vascular_EC"))
+# DimPlot(endo, reduction = "umap", group.by = "group", label = TRUE, raster = FALSE)
+# Standard single-cell normalization & dimensional reduction
+endo <- NormalizeData(endo, normalization.method = "LogNormalize")
+endo <- FindVariableFeatures(endo, selection.method = "vst", nfeatures = 2000)
+endo <- ScaleData(endo)
+endo <- RunPCA(endo, features = VariableFeatures(endo))
+
+# PCA elbow plot for dimension selection
+ElbowPlot(endo, ndims = 50)
+
+# Build kNN graph & screen multiple clustering resolutions
+endo <- FindNeighbors(endo, dims = 1:12, verbose = TRUE)
+resolution_seq <- seq(0.1, 1, 0.1)
+endo <- FindClusters(endo, resolution = resolution_seq, verbose = TRUE)
+
+# Visualize clustering stability across resolutions
+clustree(endo@meta.data, prefix = "RNA_snn_res.")
+
+# Final clustering with optimal resolution
+endo <- FindClusters(endo, resolution = 0.1)
+endo <- RunUMAP(endo, dims = 1:12)
+
+# UMAP visualization of treatment group & raw clusters
+DimPlot(endo, reduction = "umap", group.by = c("group", "seurat_clusters"), label = FALSE, raster = FALSE)
+
+# Count cell numbers per group & cluster
+table(endo$group, endo$seurat_clusters)
+
+# ===================== Step2: Annotate endothelial subpopulations =====================
+endo@meta.data$Celltype <- as.character(endo@meta.data$seurat_clusters)
+endo@meta.data$Celltype <- ifelse(endo@meta.data$seurat_clusters %in% c("0"), "VasEC_C0", endo@meta.data$Celltype)
+endo@meta.data$Celltype <- ifelse(endo@meta.data$seurat_clusters %in% c("1"), "VasEC_C1", endo@meta.data$Celltype)
+endo@meta.data$Celltype <- ifelse(endo@meta.data$seurat_clusters %in% c("2"), "VasEC_C2", endo@meta.data$Celltype)
+
+# UMAP plot annotated by endothelial subtypes
+ec_umap_plot <- DimPlot(
+  endo,
+  reduction = "umap",
+  group.by = "Celltype",
+  cols = ec_color_vec,
+  label = TRUE,
+  raster = FALSE
+)
+print(ec_umap_plot)
+
+# ===================== Step3: Startrac R_o/e distribution heatmap =====================
+# Input metadata for tissue distribution calculation
+in.dat <- vas_flit@meta.data
+
+# Calculate R_o/e (Observed/Expected cell distribution ratio)
+R_oe <- calTissueDist(
+  in.dat,
+  byPatient = FALSE,
+  colname.cluster = "Celltype",
+  # colname.patient = "patient",
+  colname.tissue = "group",
+  method = "chisq",
+  min.rowSum = 0
+)
+
+# Custom heatmap color gradient
+col_fun <- colorRamp2(seq(0, 2, length = 3), c("#E0F7FA", "#FFFFFF", "#FFCDD2"))
+
+# Export publication-quality ROE heatmap
 pdf("./heart_ROE_heatmap.pdf", width = 6, height = 5.5)
-Heatmap(as.matrix(R_oe),
-        show_heatmap_legend = TRUE,
-        width = unit(10, "mm"),###
-        height= unit(20, "mm"),
-        cluster_rows        = F,
-        cluster_columns     = F,
-        row_names_side      = "right",
-        show_column_names   = TRUE,
-        show_row_names      = TRUE,
-        col                 = col_fun,
-        row_names_gp        = gpar(fontsize = 6),
-        column_names_gp     = gpar(fontsize = 6),
-        heatmap_legend_param = list(
-          title  = "R_o/e",
-          at     = seq(0, 2, by = 0.5),
-          labels = seq(0, 2, by = 0.5)
-        ),
-        cell_fun = function(j, i, x, y, width, height, fill) {
-          grid.text(sprintf("%.2f", as.matrix(R_oe)[i, j]),
-                    x, y, gp = gpar(fontsize = 6))
-        })
+Heatmap(
+  as.matrix(R_oe),
+  show_heatmap_legend = TRUE,
+  width = unit(10, "mm"),
+  height = unit(20, "mm"),
+  cluster_rows = FALSE,
+  cluster_columns = FALSE,
+  row_names_side = "right",
+  show_column_names = TRUE,
+  show_row_names = TRUE,
+  col = col_fun,
+  row_names_gp = gpar(fontsize = 6),
+  column_names_gp = gpar(fontsize = 6),
+  heatmap_legend_param = list(
+    title = "R_o/e",
+    at = seq(0, 2, by = 0.5),
+    labels = seq(0, 2, by = 0.5)
+  ),
+  cell_fun = function(j, i, x, y, width, height, fill) {
+    grid.text(sprintf("%.2f", as.matrix(R_oe)[i, j]), x, y, gp = gpar(fontsize = 6))
+  }
+)
 dev.off()
-####
-DotPlot(endo,
-        group.by = 'Celltype',
-        features = marker,
-        cluster.idents = FALSE,
-        assay = 'RNA',
-        col.min = 0) +
+
+# ===================== Step4: Endothelial subtype marker dotplot =====================
+ec_dotplot <- DotPlot(
+  endo,
+  group.by = "Celltype",
+  features = marker,
+  cluster.idents = FALSE,
+  assay = "RNA",
+  col.min = 0
+) +
   scale_colour_gradientn(colors = c("#88CCEE", "#CC6677")) +
   theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
 
-
+print(ec_dotplot)
