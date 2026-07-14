@@ -8,26 +8,26 @@ library(rio)
 source("/home/data/t110633/Jobs/plot_code/bamaike.R")
 source("/home/data/t110633/Jobs/SCdata/heart/CreateBmkObject_v2 .R")
 con_data <- CreateBmkObject(
-  matrix_path = "/home/data/t110633/Jobs/SCdata/heart/空转数据/BP2/L3_heAuto/",  #矩阵文件目录
-  png_path = "/home/data/t110633/Jobs/SCdata/heart/空转数据/BP2/he_roi_small_wt.png",    #png格式图片路径
-  min.cells = 5,       #一个基因至少在n个细胞中表达才被保留，可自行调整，默认值5
-  min.features = 100,  #一个细胞至少有n个基因才被保留，可自行调整，默认值100
-  type = "S1000"      #数据类型，必须指定，可选参数有'S1000', 'S2000', 'S3000', 'cell_split'
+  matrix_path = "/home/data/t110633/Jobs/SCdata/heart/空转数据/BP2/L3_heAuto/",  
+  png_path = "/home/data/t110633/Jobs/SCdata/heart/空转数据/BP2/he_roi_small_wt.png",    
+  min.cells = 5,      
+  min.features = 100,  
+  type = "S1000" 
   )
 head(con_data)
 #saveRDS(con_data,file = './空转/conL3.rds')
 ko_data <- CreateBmkObject(
-  matrix_path = "/home/data/t110633/Jobs/SCdata/heart/空转数据/BP1/L3_heAuto/",  #矩阵文件目录
-  png_path = "/home/data/t110633/Jobs/SCdata/heart/空转数据/BP1/he_roi_small3.png",    #png格式图片路径
-  min.cells = 5,       #一个基因至少在n个细胞中表达才被保留，可自行调整，默认值5
-  min.features = 100,  #一个细胞至少有n个基因才被保留，可自行调整，默认值100
-  type = "S1000"       #数据类型，必须指定，可选参数有'S1000', 'S2000', 'S3000', 'cell_split'
+  matrix_path = "/home/data/t110633/Jobs/SCdata/heart/空转数据/BP1/L3_heAuto/",  
+  png_path = "/home/data/t110633/Jobs/SCdata/heart/空转数据/BP1/he_roi_small3.png",   
+  min.cells = 5,       
+  min.features = 100, 
+  type = "S1000"      
 )
 #saveRDS(ko_data,file = './空转/koL3.rds')
 library(spacexr)
 library(Seurat)
 library(rio)
-sc_data <- import("/home/data/t110633/Jobs/SCdata/heart/心脏/心脏/ABHD5_7week_CD.qs")
+###sc_data 单细胞数据：含个别细胞类型的亚群
 ####RCTD反卷积
 .get_counts <- function(obj, assay_name) {
   # 先试 v5
@@ -44,8 +44,7 @@ sc_data <- import("/home/data/t110633/Jobs/SCdata/heart/心脏/心脏/ABHD5_7wee
   if (!is.null(x)) return(x)
   stop(sprintf("无法从 assay '%s' 读取 counts（既不是 v5 layer 也不是 v4 slot）。", assay_name))
 }
-
-# ---- 选择并标准化坐标为两列(x, y) ----
+##
 .pick_coords_xy <- function(coords_df) {
   cand <- list(
     c("row","col"),
@@ -60,13 +59,12 @@ sc_data <- import("/home/data/t110633/Jobs/SCdata/heart/心脏/心脏/ABHD5_7wee
     stop("在 image@coordinates 中没有找到可用的坐标列（期望 row/col 或 x/y 或 imagerow/imagecol）")
   }
   xy <- coords_df[, sel, drop = FALSE]
-  colnames(xy) <- c("x","y")  # 统一成 x/y，RCTD 更稳
+  colnames(xy) <- c("x","y")
   xy
 }
 
 run_rctd_and_annotate <- function(st_obj, reference, doublet_mode = "full", max_cores = 1,
                                   spatial_assay = "Spatial") {
-  # 1) 取原始 count（兼容 Seurat v4/v5）
   # st_obj  <- con_data
   # reference <- reference
   # doublet_mode = "doublet"
@@ -74,26 +72,21 @@ run_rctd_and_annotate <- function(st_obj, reference, doublet_mode = "full", max_
   # spatial_assay = "Spatial"
   spatial_count <- .get_counts(st_obj, spatial_assay)
   
-  # 2) 取坐标（默认第一个 image）
   if (length(st_obj@images) < 1) stop("该 ST 对象没有 images。")
   img_key <- names(st_obj@images)[1]
   coords_raw <- st_obj@images[[img_key]]@coordinates
   coords <- .pick_coords_xy(coords_raw)
   
-  # 3) 确保坐标的行名与 spot 名一致；必要时对齐顺序/交集
   spot_names <- colnames(spatial_count)
   if (is.null(rownames(coords))) rownames(coords) <- rownames(coords_raw)
-  # 若行名不是 spot 名，就尝试强制对齐到 counts 的列名
   if (!all(rownames(coords) %in% spot_names)) {
-    # 有时 coordinates 的行名恰好也是 spot 名；若不是，直接用 spot_names 覆盖
     rownames(coords) <- spot_names[seq_len(nrow(coords))]
   }
-  # 只保留交集且按 counts 列顺序重排
   common <- intersect(rownames(coords), spot_names)
   spatial_count <- spatial_count[, common, drop = FALSE]
   coords <- coords[common, , drop = FALSE]
   
-  # 4) 构建 query 并运行 RCTD
+  # 构建 query 并运行 RCTD
   query <- SpatialRNA(coords, spatial_count)
   rctd_obj <- create.RCTD(query, reference, max_cores = max_cores,CELL_MIN_INSTANCE = 10)
   rctd_obj <- run.RCTD(rctd_obj, doublet_mode = doublet_mode)
@@ -131,7 +124,7 @@ coord <- GetTissueCoordinates(st_con, cols = c("imagecol", "imagerow"), scale = 
 coord <- cbind(rownames(coord),coord)
 names(coord) <-  c("cellID","coord_x","coord_y")
 a <- st_con@meta.data
-a <- a[,c(1,31)]
+a <- a[,c(1,31)] ###second_type
 meta <- cbind(rownames(a),a)
 meta  <- meta[,-2]
 meta <- as.data.frame(meta)
