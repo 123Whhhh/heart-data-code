@@ -1,3 +1,10 @@
+# ==============================================================================
+# Macrophage Subclustering & Marker Visualization Script
+# Analysis workflow: Subset macrophage -> PCA/UMAP clustering -> Marker gene identification
+# Celltype annotation -> UMAP plot / Dotplot / GO barplot / Gene expression heatmap
+# Dependencies: Seurat, tidyverse, ggplot2, patchwork, harmony, clustree, rio, cols4all, ComplexHeatmap
+# ==============================================================================
+# Load all required packages
 library(Seurat)
 library(SeuratObject)
 library(dplyr)
@@ -7,129 +14,157 @@ library(RColorBrewer)
 library(clustree)
 library(harmony)
 library(scDblFinder)
-library(SingleCellExperiment) 
+library(SingleCellExperiment)
 library(rio)
-######
+library(cols4all)
+library(ComplexHeatmap)
+
+# Global output directory setup
+if (!dir.exists("./mac")) dir.create("./mac")
+
+# ===================== Step1: Load raw single-cell data & Subset macrophage =====================
 sc_data <- import("./scdata")
-mac <-  subset(sc_data,subset=celltype == "Mac")
+mac <- subset(sc_data, subset = celltype == "Mac")
+
+# Standard Seurat preprocessing workflow
 mac <- NormalizeData(mac, normalization.method = "LogNormalize")
-mac <- FindVariableFeatures(mac, selection.method = "vst", nfeatures = 2000)##3000
+mac <- FindVariableFeatures(mac, selection.method = "vst", nfeatures = 2000)
 mac <- ScaleData(mac)
 mac <- RunPCA(mac, features = VariableFeatures(object = mac))
+
+# PCA dimension selection visualization
 ElbowPlot(mac, ndims = 50)
-mac <- FindNeighbors(mac, dims = 1:10, verbose = TRUE)# 36 20
-resolution <- seq(0.1,1,0.1)
-mac <- FindClusters(mac,
-                    resolution = resolution,
-                    verbose = TRUE)
+
+# Graph construction & multi-resolution clustering screening
+mac <- FindNeighbors(mac, dims = 1:10, verbose = TRUE)
+resolution <- seq(0.1, 1, 0.1)
+mac <- FindClusters(mac, resolution = resolution, verbose = TRUE)
 clustree(mac@meta.data, prefix = "RNA_snn_res.")
+
+# Final clustering with optimal resolution
 mac <- FindClusters(mac, resolution = 0.3)
 mac <- RunUMAP(mac, dims = 1:10)
-DimPlot(mac, reduction = "umap", group.by = c("group","seurat_clusters"),label = T,raster = F)
-######
+
+# UMAP plot for group & cluster distribution
+DimPlot(mac, reduction = "umap", group.by = c("group", "seurat_clusters"), label = TRUE, raster = FALSE)
+
+# ===================== Step2: Identify cell-type specific marker genes =====================
 Idents(mac) <- "seurat_clusters"
-marker_mac <-FindAllMarkers(mac, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
-marker_mac <- subset(marker_mac,marker_mac$p_val_adj<=0.05&marker_mac$avg_log2FC>0.5)
-marker_mac_sorted <- marker_mac %>%
+marker_mac <- FindAllMarkers(mac,
+                             only.pos = TRUE,
+                             min.pct = 0.25,
+                             logfc.threshold = 0.25)
+
+# Filter significant high-expression markers
+marker_mac_filter <- marker_mac %>%
+  filter(p_val_adj <= 0.05 & avg_log2FC > 0.5) %>%
   group_by(cluster) %>%
   arrange(desc(avg_log2FC), .by_group = TRUE) %>%
   ungroup()
-table(marker_mac$cluster)
-marker_mac_sorted$diff_pct <- marker_mac_sorted$pct.1-marker_mac_sorted$pct.2
-marker_mac_sorted  <- subset(marker_mac_sorted,marker_mac_sorted$diff_pct>0)
-######
-mac@meta.data$Celltype <- mac@meta.data$seurat_clusters
-mac@meta.data$Celltype <- ifelse(mac@meta.data$seurat_clusters %in% c("0"),"Mac_Repair", mac@meta.data$Celltype)
-mac@meta.data$Celltype <- ifelse(mac@meta.data$seurat_clusters %in% c("1","2"),"Mac_M1",mac@meta.data$Celltype)
-mac@meta.data$Celltype <- ifelse(mac@meta.data$seurat_clusters %in% c("3"),"Mac_Pecam1+",mac@meta.data$Celltype)
-mac@meta.data$Celltype <- ifelse(mac@meta.data$seurat_clusters %in% c("4"),"Mac_Dcn+",mac@meta.data$Celltype)
-mac@meta.data$Celltype <- ifelse(mac@meta.data$seurat_clusters %in% c("5"),"Mac_Spp1+",mac@meta.data$Celltype)
-mac@meta.data$Celltype <- ifelse(mac@meta.data$seurat_clusters %in% c("6"),"Mac_Cycling",mac@meta.data$Celltype)
-mac@meta.data$Celltype <- ifelse(mac@meta.data$seurat_clusters %in% c("7"),"Mac_Ly6c+",mac@meta.data$Celltype)
-DimPlot(mac, reduction = "umap", group.by = "Celltype",cols = col,label = F,raster = F)
-####
-library(cols4all)
-mac_color <- c4a("accent",7)
-col <- c("#BEAED4","#BF5B17" ,"#7FC97F", "#FDC086", "#FFFF99", "#386CB0", "#F0027F")
-cellty <- c("Mac_Cycling","Mac_Dcn+","Mac_Ly6c+", "Mac_M1","Mac_Pecam1+","Mac_Repair","Mac_Spp1+")
-group_col <- setNames(col,cellty)
-pic <- DimPlot(mac, reduction = "umap", group.by = c("Celltype") ,cols = group_col,label = F,raster = F)
-######
-mar <- c("Spp1","Trem2","Cdkn1a",
-         "Mrc1", "Cd163",
-         "Kdr", "Cdh5", "Pecam1",
-         "Il1b", "Nlrp3", "Cxcl2","Cd86",
-         "Ly6c2","Ccr2",
-         "Dcn", "Col1a1", 
-         "Mki67", "Top2a")
-pic <- DotPlot(mac,
-               group.by = 'Celltype',
-               features = unique(mar),
-               cluster.idents = FALSE,
-               assay = 'RNA',
-               col.min = 0) +
+
+# Count marker number per cluster
+table(marker_mac_filter$cluster)
+
+# Calculate cell-specific expression difference between two groups
+marker_mac_filter$diff_pct <- marker_mac_filter$pct.1 - marker_mac_filter$pct.2
+marker_mac_filter <- subset(marker_mac_filter, marker_mac_filter$diff_pct > 0)
+
+# ===================== Step3: Annotate macrophage subpopulations =====================
+mac@meta.data$Celltype <- as.character(mac@meta.data$seurat_clusters)
+mac@meta.data$Celltype <- ifelse(mac@meta.data$seurat_clusters %in% c("0"), "Mac_Repair", mac@meta.data$Celltype)
+mac@meta.data$Celltype <- ifelse(mac@meta.data$seurat_clusters %in% c("1", "2"), "Mac_M1", mac@meta.data$Celltype)
+mac@meta.data$Celltype <- ifelse(mac@meta.data$seurat_clusters %in% c("3"), "Mac_Pecam1+", mac@meta.data$Celltype)
+mac@meta.data$Celltype <- ifelse(mac@meta.data$seurat_clusters %in% c("4"), "Mac_Dcn+", mac@meta.data$Celltype)
+mac@meta.data$Celltype <- ifelse(mac@meta.data$seurat_clusters %in% c("5"), "Mac_Spp1+", mac@meta.data$Celltype)
+mac@meta.data$Celltype <- ifelse(mac@meta.data$seurat_clusters %in% c("6"), "Mac_Cycling", mac@meta.data$Celltype)
+mac@meta.data$Celltype <- ifelse(mac@meta.data$seurat_clusters %in% c("7"), "Mac_Ly6c+", mac@meta.data$Celltype)
+
+# Custom fixed color palette for macrophage subclusters
+cellty_order <- c("Mac_Cycling", "Mac_Dcn+", "Mac_Ly6c+", "Mac_M1", "Mac_Pecam1+", "Mac_Repair", "Mac_Spp1+")
+col_palette <- c("#BEAED4", "#BF5B17", "#7FC97F", "#FDC086", "#FFFF99", "#386CB0", "#F0027F")
+group_col <- setNames(col_palette, cellty_order)
+
+# Annotated UMAP visualization
+umap_celltype_plot <- DimPlot(mac, reduction = "umap", group.by = "Celltype", cols = group_col, label = FALSE, raster = FALSE)
+print(umap_celltype_plot)
+
+# ===================== Step4: Dotplot for canonical marker genes =====================
+marker_gene_list <- c(
+  "Spp1", "Trem2", "Cdkn1a",
+  "Mrc1", "Cd163",
+  "Kdr", "Cdh5", "Pecam1",
+  "Il1b", "Nlrp3", "Cxcl2", "Cd86",
+  "Ly6c2", "Ccr2",
+  "Dcn", "Col1a1",
+  "Mki67", "Top2a"
+)
+
+dot_plot <- DotPlot(mac,
+                    group.by = "Celltype",
+                    features = unique(marker_gene_list),
+                    cluster.idents = FALSE,
+                    assay = "RNA",
+                    col.min = 0) +
   scale_colour_gradientn(colors = c("#88CCEE", "#CC6677")) +
   theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
-######
-dt <- import("./mac/代表性通路_亚群.xlsx")
-mycol <- mac_color
-dt$Description <- factor(dt$Description, 
-                         levels= rev(dt$Description))
-p <- ggplot(dt) +
-  geom_col(aes(x = -log10(p.adjust), y = Description, fill = factor(Celltype)),
-           width = 0.5) +
-  scale_x_continuous(expand = c(0,0), limits = c(0, 95)) +
-  scale_fill_manual(values = mycol, guide = "none") +   
-  geom_text(aes(x = 0.5, y = Description, label = Description),
-            size = 4, hjust = 0) +
-  labs(y = "", title = "GO enrichment item") +
+print(dot_plot)
+
+# ===================== Step5: GO enrichment horizontal bar plot =====================
+go_result <- import("./mac/GO_enrichment_subcluster.xlsx")
+go_result$Description <- factor(go_result$Description, levels = rev(go_result$Description))
+
+go_bar_plot <- ggplot(go_result) +
+  geom_col(aes(x = -log10(p.adjust), y = Description, fill = factor(Celltype)), width = 0.5) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, 95)) +
+  scale_fill_manual(values = col4all("accent", 7), guide = "none") +
+  geom_text(aes(x = 0.5, y = Description, label = Description), size = 4, hjust = 0) +
+  labs(y = "", title = "GO enrichment items") +
   theme_bw() +
-  theme(axis.text.y  = element_blank(),
-        axis.ticks.y = element_blank(),
-        panel.grid   = element_blank(),
-        plot.title   = element_text(hjust = 0.5, face = "bold"))
-p
-###
-ge <- c("Il1b", "Cxcl1", "Cxcl2", "Nfkbiz", "Fos", "Socs3", "Nlrp3","Tnfaip3","Mt1","Mt2","Sod2","Gpx3")
-choose <- ge
-#choose %in% rownames(mac_filt) 
-group2_matrix <- as.matrix(GetAssayData(mac_filt, assay = "RNA", slot = "data"))
-group2_matrix  <- group2_matrix[intersect(choose,rownames(group2_matrix)),]###gene choose
-mat   <- t(group2_matrix)
-a <- mac_filt@meta.data
-a <- data.frame(id=rownames(a),a)
-mat <- as.data.frame(mat)
-mat <- data.frame(id=rownames(mat),mat)
-data <- left_join(a,mat,by = "id")
-colnames(data)
-df <- data[,c(5,57:length(colnames(data)))]
-heatmap_data <- df %>%
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    panel.grid = element_blank(),
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  )
+print(go_bar_plot)
+
+# ===================== Step6: Inflammatory gene average expression heatmap =====================
+heatmap_gene_set <- c("Il1b", "Cxcl1", "Cxcl2", "Nfkbiz", "Fos", "Socs3", "Nlrp3",
+                      "Tnfaip3", "Mt1", "Mt2", "Sod2", "Gpx3")
+
+# Extract normalized expression matrix
+expr_matrix <- as.matrix(GetAssayData(mac_filt, assay = "RNA", slot = "data"))
+expr_matrix <- expr_matrix[intersect(heatmap_gene_set, rownames(expr_matrix)), ]
+
+# Combine metadata and expression value
+expr_df <- as.data.frame(t(expr_matrix))
+expr_df$id <- rownames(expr_df)
+meta_df <- data.frame(id = rownames(mac_filt@meta.data), mac_filt@meta.data)
+merge_df <- left_join(meta_df, expr_df, by = "id")
+
+# Retain group label + target gene expression columns
+heat_raw_df <- merge_df[, c("group", colnames(expr_df)[colnames(expr_df) != "id"])]
+
+# Calculate mean expression per group for heatmap
+heatmap_mean <- heat_raw_df %>%
   group_by(group) %>%
-  summarise(across(everything(), ~ mean(.x, na.rm = TRUE))) %>% 
+  summarise(across(everything(), ~ mean(.x, na.rm = TRUE))) %>%
   column_to_rownames("group") %>%
-  t() 
-library(ComplexHeatmap)
-pdf("./expression_heatmap.pdf",width = 8,height = 5)
-pheatmap(t(heatmap_data),
+  t()
+
+# Export publication-quality heatmap PDF
+pdf("./expression_heatmap.pdf", width = 8, height = 5)
+pheatmap(t(heatmap_mean),
          color = colorRampPalette(c("#2166AC", "white", "#B2182B"))(50),
-         scale = "none",  # 按行标准化 column
-         cluster_rows = F,  # 对行聚类
-         cluster_cols = F,  # 不对列聚类（保留分组顺序）
-         show_rownames = TRUE,  # 显示行名（通路名）
-         show_colnames = TRUE,  # 显示列名（分组名）
-         fontsize_row = 8,  # 行名字体大小
-         fontsize_col = 10,  # 列名字体大小
-         cellwidth = 22,  # 调整格子宽度
+         scale = "none",
+         cluster_rows = FALSE,
+         cluster_cols = FALSE,
+         show_rownames = TRUE,
+         show_colnames = TRUE,
+         fontsize_row = 8,
+         fontsize_col = 10,
+         cellwidth = 22,
          cellheight = 22,
-         display_numbers = F,
-         name = "Expression",
-         # gaps_row = c(7),
-         # gaps_col = c(7,11)
-         # annotation_row = row_annot,
-         # annotation_colors = sci_colors,
-         #main = "Inflammation") 
-)
+         display_numbers = FALSE,
+         name = "Expression")
 dev.off()
-
-
-
