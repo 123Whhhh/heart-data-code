@@ -1,1 +1,166 @@
+# ==============================================================================
+# Signature Score Pipeline Function
+# Two scoring algorithms: AUCell / Seurat AddModuleScore
+# Input: seurat_obj, gene_list, score_type = c("AUCell", "AddModuleScore")
+# Output: Seurat object with signature score added into metadata
+# ==============================================================================
+library(Seurat)
+library(AUCell)
+library(ggplot2)
+library(ggpubr)
+library(dplyr)
+#' Calculate gene signature score (AUCell / AddModuleScore)
+#' @param seurat_obj Seurat object
+#' @param gene_list vector of target signature genes
+#' @param score_name character, name of score stored in metadata
+#' @param score_method "AUCell" or "AddModuleScore"
+#' @param n_cores core number for AUCell calculation
+#' @return Seurat object with new score column
+calc_signature_score <- function(seurat_obj,
+                                gene_list,
+                                score_name = "Signature_Score",
+                                score_method = c("AUCell", "AddModuleScore"),
+                                n_cores = 1) {
+  score_method <- match.arg(score_method)
+  # Filter genes exist in object
+  gene_filtered <- intersect(gene_list, rownames(seurat_obj))
+  
+  if (length(gene_filtered) == 0) {
+    stop("Error: No signature genes detected in seurat object!")
+  }
+  
+  if (score_method == "AUCell") {
+    # AUCell workflow
+    expr_mat <- GetAssayData(seurat_obj, assay = "RNA", slot = "data")
+    cell_rank <- AUCell_buildRankings(expr_mat, plotStats = FALSE)
+    gene_set <- list(sig = gene_filtered)
+    auc_res <- AUCell_calcAUC(gene_set, cell_rank, nCores = n_cores)
+    seurat_obj[[score_name]] <- as.numeric(auc_res@assays@data$AUC)
+  } else if (score_method == "AddModuleScore") {
+    # Seurat AddModuleScore
+    temp_name <- paste0(score_name, "_temp")
+    seurat_obj <- AddModuleScore(
+      object = seurat_obj,
+      features = list(gene_filtered),
+      name = temp_name
+    )
+    # Rename auto-generated column (AddModuleScore add number suffix)
+    col_old <- paste0(temp_name, "1")
+    seurat_obj[[score_name]] <- seurat_obj[[col_old]]
+    seurat_obj[[col_old]] <- NULL
+  }
+  return(seurat_obj)
+}
 
+# ==============================================================================
+# Universal Violin Plot Function for Signature Score Comparison
+#' @param meta_df metadata data frame (contains celltype, group, score column)
+#' @param celltype_col column name for cell subtype
+#' @param score_col column name of calculated signature score
+#' @param group_col column name of experimental group
+#' @param compare_list list of comparison pairs, e.g. list(c("WT","KO"), c("C0","C1"))
+#' @param test_method "t.test" / "wilcox.test" / "kruskal.test"
+#' @param fill_by c("celltype", "group") color fill source
+#' @param color_palette custom color vector
+#' @param y_lab y-axis title
+#' @return ggplot violin plot object
+plot_signature_violin <- function(meta_df,
+                                  celltype_col = "Celltype",
+                                  score_col,
+                                  group_col = "group",
+                                  compare_list = NULL,
+                                  test_method = "t.test",
+                                  fill_by = c("celltype", "group"),
+                                  color_palette,
+                                  y_lab = "Signature Score") {
+  fill_by <- match.arg(fill_by)
+  meta_df <- as.data.frame(meta_df)
+  
+  # Base violin with boxplot
+  p <- ggviolin(
+    meta_df,
+    x = if (fill_by == "celltype") celltype_col else group_col,
+    y = score_col,
+    fill = fill_by,
+    add = "boxplot",
+    add.params = list(fill = "white", width = 0.08, outlier.shape = NA),
+    palette = color_palette,
+    width = 0.5
+  ) +
+    stat_compare_means(
+      comparisons = compare_list,
+      method = test_method,
+      label = "p.signif",
+      symnum.args = list(
+        cutpoints = c(0, 0.001, 0.01, 0.05, 1),
+        symbols = c("***", "**", "*", "ns")
+      ),
+      size = 5
+    ) +
+    labs(y = y_lab, x = "") +
+    theme_bw() +
+    theme(
+      panel.grid = element_blank(),
+      axis.text.x = element_text(size = 12, angle = 45, hjust = 1, face = "bold"),
+      axis.text.y = element_text(size = 12),
+      axis.title.y = element_text(size = 14, face = "bold"),
+      legend.title = element_text(size = 12, face = "bold"),
+      legend.text = element_text(size = 10)
+    )
+  return(p)
+}
+
+####示例
+ferroptosis_genes <- ferroptosis_promote
+endo <- calc_signature_score(
+  seurat_obj = endo,
+  gene_list = ferroptosis_genes,
+  score_name = "Ferroptosis_AUC",
+  score_method = "AUCell",
+  n_cores = 1
+)
+plot_meta <- endo@meta.data
+
+# VasEC_C1，Control vs KO
+ec1_meta <- subset(plot_meta, Celltype == "VasEC_C1")
+p_ferro <- plot_signature_violin(
+  meta_df = ec1_meta,
+  celltype_col = "Celltype",
+  score_col = "Ferroptosis_AUC",
+  group_col = "group",
+  compare_list = list(c("Control", "Abhd5_KO")),
+  test_method = "t.test",
+  fill_by = "group",
+  color_palette = c("#8fc0dc", "#f9766e"),
+  y_lab = "Ferroptosis AUCell Score"
+)
+print(p_ferro)
+
+# EndMT AddModuleScore
+endmt_genes <- endmt_up_mouse
+endo <- calc_signature_score(
+  seurat_obj = endo,
+  gene_list = endmt_genes,
+  score_name = "EndMT_Module",
+  score_method = "AddModuleScore"
+)
+
+plot_meta <- endo@meta.data
+# 
+plot_meta$Celltype <- factor(plot_meta$Celltype, levels = c("VasEC_C0","VasEC_C1","VasEC_C2"))
+# 
+comp_pair <- list(c("VasEC_C0","VasEC_C1"), c("VasEC_C0","VasEC_C2"))
+p_endmt <- plot_signature_violin(
+  meta_df = plot_meta,
+  score_col = "EndMT_Module",
+  compare_list = comp_pair,
+  test_method = "wilcox.test",
+  fill_by = "celltype",
+  color_palette = mycol,
+  y_lab = "EndMT Module Score"
+)
+print(p_endmt)
+
+# 
+ggsave("./score_plot/Ferroptosis_VasEC0.pdf", p_ferro, width = 5, height = 5, dpi = 300)
+ggsave("./score_plot/EndMT_EC_subtype.pdf", p_endmt, width = 7, height = 5, dpi = 300)
