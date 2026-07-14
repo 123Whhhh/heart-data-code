@@ -1,444 +1,611 @@
-#####ST data deal 
-library(mistyR)
-library(spacexr)
-library(dplyr)
-library(Seurat)
-library(SeuratObject)
-library(rio)
-source("/home/data/t110633/Jobs/plot_code/bamaike.R")
-source("/home/data/t110633/Jobs/SCdata/heart/CreateBmkObject_v2 .R")
-con_data <- CreateBmkObject(
-  matrix_path = "/home/data/t110633/Jobs/SCdata/heart/空转数据/BP2/L3_heAuto/",  
-  png_path = "/home/data/t110633/Jobs/SCdata/heart/空转数据/BP2/he_roi_small_wt.png",    
-  min.cells = 5,      
-  min.features = 100,  
-  type = "S1000" 
-  )
-head(con_data)
-#saveRDS(con_data,file = './空转/conL3.rds')
-ko_data <- CreateBmkObject(
-  matrix_path = "/home/data/t110633/Jobs/SCdata/heart/空转数据/BP1/L3_heAuto/",  
-  png_path = "/home/data/t110633/Jobs/SCdata/heart/空转数据/BP1/he_roi_small3.png",   
-  min.cells = 5,       
-  min.features = 100, 
-  type = "S1000"      
-)
-#saveRDS(ko_data,file = './空转/koL3.rds')
-library(spacexr)
-library(Seurat)
-library(rio)
-###sc_data 单细胞数据：含个别细胞类型的亚群
-####RCTD反卷积
-.get_counts <- function(obj, assay_name) {
-  # 先试 v5
+################################################################################
+# Spatial Transcriptomics Analysis of Cardiac Tissue
+# Description: RCTD deconvolution and cell-cell colocalization analysis
+# Author: [Wang hao]
+################################################################################
+# ==============================================================================
+# PART 1: Environment Setup
+# ==============================================================================
+# Clear environment
+rm(list = ls())
+# Load required packages
+suppressPackageStartupMessages({
+  library(mistyR)
+  library(spacexr)
+  library(dplyr)
+  library(Seurat)
+  library(SeuratObject)
+  library(rio)
+  library(dbscan)
+  library(tidyverse)
+  library(ComplexHeatmap)
+  library(circlize)
+  library(grid)
+  library(cowplot)
+})
+# Set seed for reproducibility
+set.seed(42)
+# Set global options
+options(stringsAsFactors = FALSE)
+# ==============================================================================
+# PART 2: Define All Functions
+# ==============================================================================
+# ------------------------------------------------------------------------------
+# 2.1 Helper Functions
+# ------------------------------------------------------------------------------
+#' Get counts from Seurat object (compatible with v4 and v5)
+get_counts <- function(obj, assay_name) {
+  # Try v5 layer first
   x <- tryCatch(
     GetAssayData(object = obj, assay = assay_name, slot = "counts"),
     error = function(e) NULL
   )
   if (!is.null(x)) return(x)
-  # 回退 v4
+  
+  # Fallback for v4
   x <- tryCatch(
     GetAssayData(object = obj, assay = assay_name, slot = "counts"),
     error = function(e) NULL
   )
   if (!is.null(x)) return(x)
-  stop(sprintf("无法从 assay '%s' 读取 counts（既不是 v5 layer 也不是 v4 slot）。", assay_name))
+  
+  stop(sprintf("Cannot read counts from assay '%s'", assay_name))
 }
-##
-.pick_coords_xy <- function(coords_df) {
-  cand <- list(
-    c("row","col"),
-    c("x","y"),
-    c("imagerow","imagecol")
+#' Extract spatial coordinates from Seurat object
+pick_coords_xy <- function(coords_df) {
+  # Try common coordinate column names
+  candidates <- list(
+    c("row", "col"),
+    c("x", "y"),
+    c("imagerow", "imagecol")
   )
-  sel <- NULL
-  for (cn in cand) {
-    if (all(cn %in% colnames(coords_df))) { sel <- cn; break }
+  selected <- NULL
+  for (cn in candidates) {
+    if (all(cn %in% colnames(coords_df))) {
+      selected <- cn
+      break
+    }
+  }  
+  if (is.null(selected)) {
+    stop("No valid coordinate columns found in image@coordinates")
   }
-  if (is.null(sel)) {
-    stop("在 image@coordinates 中没有找到可用的坐标列（期望 row/col 或 x/y 或 imagerow/imagecol）")
-  }
-  xy <- coords_df[, sel, drop = FALSE]
-  colnames(xy) <- c("x","y")
+  xy <- coords_df[, selected, drop = FALSE]
+  colnames(xy) <- c("x", "y")
   xy
 }
-
-run_rctd_and_annotate <- function(st_obj, reference, doublet_mode = "full", max_cores = 1,
-                                  spatial_assay = "Spatial") {
-  # st_obj  <- con_data
-  # reference <- reference
-  # doublet_mode = "doublet"
-  # max_cores = 6
-  # spatial_assay = "Spatial"
-  spatial_count <- .get_counts(st_obj, spatial_assay)
-  
-  if (length(st_obj@images) < 1) stop("该 ST 对象没有 images。")
+#' Normalize weights from RCTD results
+normalize_weights <- function(weights) {
+  weights / rowSums(weights)
+}
+# ------------------------------------------------------------------------------
+# 2.2 RCTD Functions
+# ------------------------------------------------------------------------------
+#' Run RCTD deconvolution and annotate Seurat object
+run_rctd_and_annotate <- function(
+    st_obj,
+    reference,
+    doublet_mode = "doublet",
+    max_cores = 1,
+    spatial_assay = "Spatial"
+) {
+  # Extract counts
+  spatial_count <- get_counts(st_obj, spatial_assay)
+  # Extract coordinates
+  if (length(st_obj@images) < 1) {
+    stop("ST object has no images.")
+  }
   img_key <- names(st_obj@images)[1]
   coords_raw <- st_obj@images[[img_key]]@coordinates
-  coords <- .pick_coords_xy(coords_raw)
-  
+  coords <- pick_coords_xy(coords_raw)
+  # Align spots
   spot_names <- colnames(spatial_count)
-  if (is.null(rownames(coords))) rownames(coords) <- rownames(coords_raw)
+  if (is.null(rownames(coords))) {
+    rownames(coords) <- rownames(coords_raw)
+  }
   if (!all(rownames(coords) %in% spot_names)) {
     rownames(coords) <- spot_names[seq_len(nrow(coords))]
   }
   common <- intersect(rownames(coords), spot_names)
   spatial_count <- spatial_count[, common, drop = FALSE]
   coords <- coords[common, , drop = FALSE]
-  
-  # 构建 query 并运行 RCTD
+  # Build query and run RCTD
   query <- SpatialRNA(coords, spatial_count)
-  rctd_obj <- create.RCTD(query, reference, max_cores = max_cores,CELL_MIN_INSTANCE = 10)
+  rctd_obj <- create.RCTD(
+    query,
+    reference,
+    max_cores = max_cores,
+    CELL_MIN_INSTANCE = 10
+  )
   rctd_obj <- run.RCTD(rctd_obj, doublet_mode = doublet_mode)
-  # 5) 归一化权重并写回 ST 元数据
+  # Normalize weights and add to metadata
   weights <- rctd_obj@results$weights
   norm_weights <- normalize_weights(weights)
+  # Add to Seurat object
   df <- as.data.frame(norm_weights)
   for (col_name in colnames(df)) {
     st_obj <- AddMetaData(st_obj, metadata = df[[col_name]], col.name = col_name)
   }
+  # Add results
   results_df <- rctd_obj@results$results_df
   for (col_name in colnames(results_df)) {
     st_obj <- AddMetaData(st_obj, metadata = results_df[[col_name]], col.name = col_name)
   }
   return(list(st = st_obj, rctd = rctd_obj, weights = norm_weights))
 }
-# ----- 构建单细胞 reference（同样兼容 v4/v5） -----
-sc_counts <- .get_counts(sc_data, "RNA")
-celltypes <- as.factor(sc_data$Celltype)
-names(celltypes) <- colnames(sc_data)
-reference <- Reference(sc_counts, celltypes)
+# ------------------------------------------------------------------------------
+# 2.3 Colocalization Functions
+# ------------------------------------------------------------------------------
+#' Calculate median nearest neighbor distances between two cell types
+calculate_median_distance <- function(typeA_coords, typeB_coords) {
+  nn <- kNN(
+    x = typeA_coords,
+    k = 1,
+    query = typeB_coords,
+    search = "kdtree"
+  )
+  return(median(nn$dist))
+}
+#' Perform permutation test for colocalization
+permutation_test_colocalization <- function(
+    meta_df,
+    cell_type_a,
+    cell_type_b,
+    n_permutations = 1000
+) {
+  # Extract coordinates for each cell type
+  coords_a <- meta_df %>%
+    filter(cell_names == cell_type_a) %>%
+    dplyr::select(coord_x, coord_y)
+  
+  coords_b <- meta_df %>%
+    filter(cell_names == cell_type_b) %>%
+    dplyr::select(coord_x, coord_y)
+  # Observed distances
+  dist_a_to_b <- calculate_median_distance(coords_a, coords_b)
+  dist_b_to_a <- calculate_median_distance(coords_b, coords_a)
+  # Permutation
+  perm_dists_a_to_b <- numeric(n_permutations)
+  perm_dists_b_to_a <- numeric(n_permutations)
+  for (i in seq_len(n_permutations)) {
+    # Randomly permute cell type labels
+    perm_labels <- sample(meta_df$cell_names)
+    perm_a <- meta_df %>%
+      mutate(perm_labels = perm_labels) %>%
+      filter(perm_labels == cell_type_a) %>%
+      dplyr::select(coord_x, coord_y)
+    perm_b <- meta_df %>%
+      mutate(perm_labels = perm_labels) %>%
+      filter(perm_labels == cell_type_b) %>%
+      dplyr::select(coord_x, coord_y)
+    if (nrow(perm_a) > 0 && nrow(perm_b) > 0) {
+      perm_dists_a_to_b[i] <- calculate_median_distance(perm_a, perm_b)
+      perm_dists_b_to_a[i] <- calculate_median_distance(perm_b, perm_a)
+    } else {
+      perm_dists_a_to_b[i] <- NA
+      perm_dists_b_to_a[i] <- NA
+    }
+  }
+  # Remove NAs
+  perm_dists_a_to_b <- perm_dists_a_to_b[!is.na(perm_dists_a_to_b)]
+  perm_dists_b_to_a <- perm_dists_b_to_a[!is.na(perm_dists_b_to_a)]
+  # Calculate p-values (corrected)
+  p_value_a_to_b <- (sum(perm_dists_a_to_b <= dist_a_to_b, na.rm = TRUE) + 1) /
+    (length(perm_dists_a_to_b) + 1)
+  
+  p_value_b_to_a <- (sum(perm_dists_b_to_a <= dist_b_to_a, na.rm = TRUE) + 1) /
+    (length(perm_dists_b_to_a) + 1)
+  
+  return(list(
+    a_to_b = list(
+      observed_dist = dist_a_to_b,
+      p_value = p_value_a_to_b
+    ),
+    b_to_a = list(
+      observed_dist = dist_b_to_a,
+      p_value = p_value_b_to_a
+    )
+  ))
+}
 
-# ----- 分别跑 con / ko -----
-###之前
-# res_ko_subtype <- run_rctd_and_annotate(ko_data, reference, doublet_mode = "doublet", max_cores = 5)
-# res_con_subtype <- run_rctd_and_annotate(con_data, reference, doublet_mode = "doublet", max_cores = 5)
+#' Run complete colocalization analysis
+run_colocalization <- function(
+    st_obj,
+    cell_type_col = "second_type",
+    n_permutations = 1000,
+    min_cell_count = 1
+) {
+  # Extract metadata and coordinates
+  coords <- GetTissueCoordinates(st_obj, cols = c("imagecol", "imagerow"), scale = NULL)
+  coords <- cbind(rownames(coords), coords)
+  colnames(coords) <- c("cellID", "coord_x", "coord_y")
+  
+  meta <- st_obj@meta.data[, c(1, which(colnames(st_obj@meta.data) == cell_type_col))]
+  meta <- cbind(rownames(meta), meta)
+  colnames(meta) <- c("cellID", "cell_names")
+  
+  # Merge and clean
+  df <- left_join(meta, coords, by = "cellID") %>%
+    na.omit()
+  rownames(df) <- df$cellID
+  df <- df[, -1]  # Remove cellID column
+  
+  # Filter by minimum cell count
+  cell_counts <- table(df$cell_names)
+  valid_cells <- names(cell_counts)[cell_counts >= min_cell_count]
+  df <- df %>% filter(cell_names %in% valid_cells)
+  
+  cell_names <- sort(unique(df$cell_names))
+  
+  # Run pairwise colocalization
+  results <- NULL
+  combinations <- combn(cell_names, 2)
+  
+  for (i in seq_len(ncol(combinations))) {
+    type_a <- combinations[1, i]
+    type_b <- combinations[2, i]
+    
+    test_result <- permutation_test_colocalization(
+      meta_df = df,
+      cell_type_a = type_a,
+      cell_type_b = type_b,
+      n_permutations = n_permutations
+    )
+    
+    # Add A -> B results
+    results <- rbind(results, data.frame(
+      Predictor = type_b,
+      Target = type_a,
+      Pvalue = test_result$a_to_b$p_value,
+      MedianDist = test_result$a_to_b$observed_dist
+    ))
+    
+    # Add B -> A results
+    results <- rbind(results, data.frame(
+      Predictor = type_a,
+      Target = type_b,
+      Pvalue = test_result$b_to_a$p_value,
+      MedianDist = test_result$b_to_a$observed_dist
+    ))
+  }
+  
+  return(results)
+}
+# ------------------------------------------------------------------------------
+# 2.4 Visualization Functions
+# ------------------------------------------------------------------------------
+#' Create spatial plot for subset of cell types
+plot_spatial_subset <- function(st_obj, colors, title = NULL) {
+  p <- SpatialDimPlot(
+    st_obj,
+    group.by = "second_type",
+    crop = FALSE,
+    stroke = NA,
+    label = FALSE,
+    pt.size.factor = 9,
+    image.alpha = 0,
+    cols = colors
+  )
+  
+  if (!is.null(title)) {
+    p <- p + ggtitle(title)
+  }
+  
+  # Add scale limits for consistency
+  p <- p + scale_x_continuous(expand = c(0, 0))
+  
+  return(p)
+}
 
+#' Create colocalization heatmap with significance markers
+plot_colocalization_heatmap <- function(
+    coloc_data,
+    output_file = NULL,
+    title = NULL,
+    color_breaks = c(0, 30, 60),
+    colors = c("#D45590", "white", "#69AADB")
+) {
+  # Prepare MedianDist matrix
+  df_dist <- coloc_data %>%
+    pivot_wider(
+      id_cols = Predictor,
+      names_from = Target,
+      values_from = MedianDist
+    )
+  
+  mat_dist <- df_dist %>%
+    column_to_rownames(var = "Predictor") %>%
+    as.matrix()
+  mat_dist[is.na(mat_dist)] <- NA
+  
+  # Prepare Pvalue matrix
+  df_pval <- coloc_data %>%
+    pivot_wider(
+      id_cols = Predictor,
+      names_from = Target,
+      values_from = Pvalue
+    )
+  
+  mat_pval <- df_pval %>%
+    column_to_rownames(var = "Predictor") %>%
+    as.matrix()
+  mat_pval[is.na(mat_pval)] <- 1
+  
+  # Create significance symbols
+  mat_symbol <- matrix("", nrow = nrow(mat_pval), ncol = ncol(mat_pval),
+                       dimnames = dimnames(mat_pval))
+  mat_symbol[mat_pval < 0.05] <- "*"
+  mat_symbol[mat_pval < 0.01] <- "**"
+  mat_symbol[mat_pval < 0.001] <- "***"
+  
+  # Color function
+  col_fun <- colorRamp2(color_breaks, colors)
+  
+  # Ensure symmetric order
+  row_order <- rownames(mat_dist)
+  mat_dist <- mat_dist[row_order, row_order]
+  
+  # Create heatmap
+  hm <- Heatmap(
+    mat_dist,
+    name = "MedianDist",
+    col = col_fun,
+    na_col = "grey90",
+    rect_gp = gpar(col = "white", lwd = 1),
+    width = ncol(mat_dist) * unit(6, "mm"),
+    height = nrow(mat_dist) * unit(6, "mm"),
+    row_names_gp = gpar(fontsize = 10),
+    column_names_gp = gpar(fontsize = 10),
+    column_names_rot = 45,
+    cluster_rows = FALSE,
+    cluster_columns = FALSE,
+    cell_fun = function(j, i, x, y, width, height, fill) {
+      symbol <- mat_symbol[i, j]
+      if (symbol != "") {
+        grid.text(symbol, x = x, y = y,
+                  gp = gpar(fontsize = 12, fontface = "bold", col = "black"))
+      }
+    },
+    heatmap_legend_param = list(
+      title = "MedianDist",
+      title_gp = gpar(fontsize = 9),
+      labels_gp = gpar(fontsize = 7)
+    )
+  )
+  
+  # Save if output file provided
+  if (!is.null(output_file)) {
+    pdf(output_file, width = 9, height = 9)
+    draw(hm)
+    dev.off()
+  }
+  
+  return(hm)
+}
+# ==============================================================================
+# PART 3: Main Analysis Pipeline
+# ==============================================================================
+cat("\n========================================\n")
+cat("Starting Spatial Transcriptomics Analysis\n")
+cat("========================================\n\n")
+# ------------------------------------------------------------------------------
+# 3.1 Create Output Directories
+# ------------------------------------------------------------------------------
+dir.create("results", showWarnings = FALSE)
+dir.create("results/rctd", showWarnings = FALSE)
+dir.create("results/colocalization", showWarnings = FALSE)
+dir.create("results/figures", showWarnings = FALSE)
+# ------------------------------------------------------------------------------
+# 3.2 Load Custom CreateBmkObject Function
+# ------------------------------------------------------------------------------
+# Note: This assumes CreateBmkObject_v2.R is in the working directory or path
+cat("Loading CreateBmkObject function...\n")
+# Check if the source file exists
+if (file.exists("./heart/CreateBmkObject_v2 .R")) {
+  source("./heart/CreateBmkObject_v2 .R")
+} else {
+  # Alternative location - adjust as needed
+  source("CreateBmkObject_v2.R")
+}
+# ------------------------------------------------------------------------------
+# 3.3 Load Spatial Data
+# ------------------------------------------------------------------------------
+cat("\nLoading spatial transcriptomics data...\n")
+
+# WT sample (Control)
+con_data <- CreateBmkObject(
+  matrix_path = "./BP2/L3_heAuto/",
+  png_path = ".//BP2/he_roi_small_wt.png",
+  min.cells = 5,
+  min.features = 100,
+  type = "S1000"
+)
+cat("WT data loaded.\n")
+
+# KO sample
+ko_data <- CreateBmkObject(
+  matrix_path = "./BP1/L3_heAuto/",
+  png_path = "./BP1/he_roi_small3.png",
+  min.cells = 5,
+  min.features = 100,
+  type = "S1000"
+)
+cat("KO data loaded.\n")
+
+# Optionally save raw objects
+# saveRDS(con_data, file = './空转/conL3.rds')
+# saveRDS(ko_data, file = './空转/koL3.rds')
+
+# ------------------------------------------------------------------------------
+# 3.4 Load Single-Cell Reference
+# ------------------------------------------------------------------------------
+cat("\nLoading single-cell reference data...\n")
+# Load single-cell data
+# sc_data <- readRDS("./sc_reference.rds")
+# If sc_data is already in environment, use it
+if (exists("sc_data")) {
+  cat("Using existing sc_data object.\n")
+  sc_counts <- get_counts(sc_data, "RNA")
+  celltypes <- as.factor(sc_data$Celltype)
+  names(celltypes) <- colnames(sc_data)
+  reference <- Reference(sc_counts, celltypes)
+  cat("Reference built successfully.\n")
+} else {
+  cat("WARNING: sc_data not found. Please load single-cell data.\n")
+  cat("Example: sc_data <- readRDS('data/processed/sc_reference.rds')\n")
+  # Stop execution if sc_data is essential
+  # stop("sc_data is required for RCTD deconvolution.")
+}
+
+# ------------------------------------------------------------------------------
+# 3.5 Run RCTD Deconvolution
+# ------------------------------------------------------------------------------
+
+cat("\nRunning RCTD deconvolution...\n")
+
+# Run RCTD for both samples
+res_con_subtype <- run_rctd_and_annotate(
+  st_obj = con_data,
+  reference = reference,
+  doublet_mode = "doublet",
+  max_cores = 5
+)
+cat("WT RCTD completed.\n")
+
+res_ko_subtype <- run_rctd_and_annotate(
+  st_obj = ko_data,
+  reference = reference,
+  doublet_mode = "doublet",
+  max_cores = 5
+)
+cat("KO RCTD completed.\n")
+
+# Extract annotated objects
 st_con <- res_con_subtype$st
 st_ko <- res_ko_subtype$st
 
+# Save RCTD results
+saveRDS(st_con, file = "results/rctd/con_L3_annotated.rds")
+saveRDS(st_ko, file = "results/rctd/ko_L3_annotated.rds")
+saveRDS(list(con = res_con_subtype, ko = res_ko_subtype), 
+        file = "results/rctd/rctd_results.rds")
+cat("RCTD results saved.\n")
 
-#####co-localization
-colnames(st_con@meta.data)
-coord <- GetTissueCoordinates(st_con, cols = c("imagecol", "imagerow"), scale = NULL)
-coord <- cbind(rownames(coord),coord)
-names(coord) <-  c("cellID","coord_x","coord_y")
-a <- st_con@meta.data
-a <- a[,c(1,31)] ###second_type
-meta <- cbind(rownames(a),a)
-meta  <- meta[,-2]
-meta <- as.data.frame(meta)
-names(meta) <- c("cellID","cell_names")
+# ------------------------------------------------------------------------------
+# 3.6 Run Colocalization Analysis
+# ------------------------------------------------------------------------------
 
-##合并并指定行名，删除特定列
-library(dplyr)
-library(tidyverse)
-df <- left_join(x = meta,y = coord,by = "cellID")
-rownames(df) <- df[,"cellID"]
-df <- df[,-1]
-df <- na.omit(df)
-coord_df <- df[,c("coord_x","coord_y")]
-meta_df <- df[,c("cell_names","coord_x","coord_y")]
-unique(meta_df$cell_names)
-##查看结果
-head(coord_df);head(meta_df)
+cat("\nPerforming colocalization analysis...\n")
 
-cell_count <- table(meta_df$cell_names)
-# 设定最小样本量阈值（建议至少5个，可根据需求调整）
-min_cell_num <- 1
-# 筛选出样本量足够的细胞类型
-valid_cell_names <- names(cell_count)[cell_count >= min_cell_num]
-cell_names <- sort(valid_cell_names)
-
-library(dbscan)
-# cell_names <- unique(meta_df[, "cell_names"]) %>% sort
-##########两两组合
-comb <- combn(cell_names,2)
-data <- NULL
-for(i in 1:ncol(comb)){
-  # 真实值估算
-  single_A <- meta_df %>% filter(cell_names == comb[,i][1]) %>% dplyr::select(coord_x, coord_y)
-  single_B <- meta_df %>% filter(cell_names == comb[,i][2]) %>% dplyr::select(coord_x, coord_y)
-  
-  nn = kNN(x = single_A, k = 1, query = single_B, search = "kdtree")
-  QB_DA_T = median(nn$dist)
-  
-  nn = kNN(x = single_B, k = 1, query = single_A, search = "kdtree")
-  QA_DB_T = median(nn$dist)
-  
-  # 随机抽样，用于p值计算
-  QB_DA_F <- NULL
-  QA_DB_F <- NULL
-  for(j in 1:1000){
-    sam_p = sample(x = 1:nrow(meta_df), size = nrow(single_A), replace = FALSE)
-    single_A_rand = meta_df[sort(sam_p),] %>% dplyr::select(coord_x, coord_y)
-    sam_p2 = sample(x = (1:nrow(meta_df))[! (1:nrow(meta_df) %in% sam_p)], size = nrow(single_B), replace = FALSE)
-    single_B_rand = meta_df[sort(sam_p2),] %>% dplyr::select(coord_x, coord_y)
-    
-    nn_rand = kNN(x = single_A_rand, k = 1, query = single_B_rand, search = "kdtree")
-    QB_DA = median(nn_rand$dist)
-    QB_DA_F <- append(QB_DA_F, QB_DA)
-    
-    nn_rand = kNN(x = single_B_rand, k = 1, query = single_A_rand, search = "kdtree")
-    QA_DB = median(nn_rand$dist)
-    QA_DB_F <- append(QA_DB_F, QA_DB)
-  }
-  
-  # 计算p值（校正）
-  rank_QB_DA = sum(QB_DA_F <= QB_DA_T) + 1
-  pvalue_QB_DA = rank_QB_DA / (1000 + 1)
-  
-  rank_QA_DB = sum(QA_DB_F <= QA_DB_T) + 1
-  pvalue_QA_DB = rank_QA_DB / (1000 + 1)
-  
-  # 构造结果数据框，增加距离列
-  tmp = data.frame(
-    Predictor = comb[,i][2],
-    Target = comb[,i][1],
-    Pvalue = pvalue_QB_DA,
-    MedianDist = QB_DA_T
-  )
-  data = rbind(tmp, data)
-  
-  tmp = data.frame(
-    Predictor = comb[,i][1],
-    Target = comb[,i][2],
-    Pvalue = pvalue_QA_DB,
-    MedianDist = QA_DB_T
-  )
-  data = rbind(tmp, data)
-}
-##结果保存
-export(data,file = "./共定位_wt.xlsx")
-# range(data$MedianDist)
-###st_ko
-coord <- GetTissueCoordinates(st_ko, cols = c("imagecol", "imagerow"), scale = NULL)
-coord <- cbind(rownames(coord),coord)
-names(coord) <-  c("cellID","coord_x","coord_y")
-a <- st_ko@meta.data
-a <- a[,c(1,31)]
-meta <- cbind(rownames(a),a)
-meta  <- meta[,-2]
-meta <- as.data.frame(meta)
-names(meta) <- c("cellID","cell_names")
-
-##合并并指定行名，删除特定列
-library(dplyr)
-library(tidyverse)
-df <- left_join(x = meta,y = coord,by = "cellID")
-rownames(df) <- df[,"cellID"]
-df <- df[,-1]
-df <- na.omit(df)
-coord_df <- df[,c("coord_x","coord_y")]
-meta_df <- df[,c("cell_names","coord_x","coord_y")]
-unique(meta_df$cell_names)
-##查看结果
-head(coord_df);head(meta_df)
-cell_count <- table(meta_df$cell_names)
-# 设定最小样本量阈值（建议至少5个，可根据需求调整）
-min_cell_num <- 1
-# 筛选出样本量足够的细胞类型
-valid_cell_names <- names(cell_count)[cell_count >= min_cell_num]
-cell_names <- sort(valid_cell_names)
-
-library(dbscan)
-# cell_names <- unique(meta_df[, "cell_names"]) %>% sort
-##########两两组合
-comb <- combn(cell_names,2)
-data <- NULL
-for(i in 1:ncol(comb)){
-  # 真实值估算
-  single_A <- meta_df %>% filter(cell_names == comb[,i][1]) %>% dplyr::select(coord_x, coord_y)
-  single_B <- meta_df %>% filter(cell_names == comb[,i][2]) %>% dplyr::select(coord_x, coord_y)
-  
-  nn = kNN(x = single_A, k = 1, query = single_B, search = "kdtree")
-  QB_DA_T = median(nn$dist)
-  
-  nn = kNN(x = single_B, k = 1, query = single_A, search = "kdtree")
-  QA_DB_T = median(nn$dist)
-  
-  # 随机抽样，用于p值计算
-  QB_DA_F <- NULL
-  QA_DB_F <- NULL
-  for(j in 1:1000){
-    sam_p = sample(x = 1:nrow(meta_df), size = nrow(single_A), replace = FALSE)
-    single_A_rand = meta_df[sort(sam_p),] %>% dplyr::select(coord_x, coord_y)
-    sam_p2 = sample(x = (1:nrow(meta_df))[! (1:nrow(meta_df) %in% sam_p)], size = nrow(single_B), replace = FALSE)
-    single_B_rand = meta_df[sort(sam_p2),] %>% dplyr::select(coord_x, coord_y)
-    
-    nn_rand = kNN(x = single_A_rand, k = 1, query = single_B_rand, search = "kdtree")
-    QB_DA = median(nn_rand$dist)
-    QB_DA_F <- append(QB_DA_F, QB_DA)
-    
-    nn_rand = kNN(x = single_B_rand, k = 1, query = single_A_rand, search = "kdtree")
-    QA_DB = median(nn_rand$dist)
-    QA_DB_F <- append(QA_DB_F, QA_DB)
-  }
-  
-  # 计算p值（校正）
-  rank_QB_DA = sum(QB_DA_F <= QB_DA_T) + 1
-  pvalue_QB_DA = rank_QB_DA / (1000 + 1)
-  
-  rank_QA_DB = sum(QA_DB_F <= QA_DB_T) + 1
-  pvalue_QA_DB = rank_QA_DB / (1000 + 1)
-  
-  # 构造结果数据框，增加距离列
-  tmp = data.frame(
-    Predictor = comb[,i][2],
-    Target = comb[,i][1],
-    Pvalue = pvalue_QB_DA,
-    MedianDist = QB_DA_T
-  )
-  data = rbind(tmp, data)
-  
-  tmp = data.frame(
-    Predictor = comb[,i][1],
-    Target = comb[,i][2],
-    Pvalue = pvalue_QA_DB,
-    MedianDist = QA_DB_T
-  )
-  data = rbind(tmp, data)
-}
-##结果保存
-export(data,file = "./共定位_ko.xlsx")
-
-library(rio)
-data <- import("./共定位_wt.xlsx")
-data <- import("./共定位_ko.xlsx")
-##绘制热图
-library(ComplexHeatmap)
-library(circlize)
-library(tidyverse)
-library(grid) 
-library(gground)
-library(corrplot)
-library(tidyr)
-library(dplyr)
-library(tidyverse)
-library(ComplexHeatmap)
-library(circlize)
-library(grid)
-
-col_fun <- colorRamp2(c(-2,0,2), c("#2872d1", "white", "#ff0d0d"))
-col_fun <- colorRamp2(c(-2,0,2), c("#13a075", "white", "#e69f03"))
-col_fun <- colorRamp2(c(-2,0,2), c("#B3A9EB", "white", "#ffa500"))
-col_fun <- colorRamp2(c(-2,0,2), c("#69AADB", "white", "#D45590"))
-col_fun <- colorRamp2(c(-2,0,2), c("#0f86a9", "white", "#FC8452"))
-col_fun <- colorRamp2(
-  breaks = c(0, 0.05, 1),         
-  colors = c("#B3A9EB", "white","grey" ) 
+# Run colocalization for WT
+coloc_wt <- run_colocalization(
+  st_obj = st_con,
+  cell_type_col = "second_type",
+  n_permutations = 1000,
+  min_cell_count = 1
 )
+cat("WT colocalization completed.\n")
 
-
-# 1. 准备MedianDist矩阵
-df_dist_wide <- data %>%
-  pivot_wider(
-    id_cols = Predictor,
-    names_from = Target,
-    values_from = MedianDist
-  )
-
-mat_dist <- df_dist_wide %>%
-  column_to_rownames(var = "Predictor") %>%
-  as.matrix()
-# NA填充，比如填充为NA（ComplexHeatmap默认灰色），或者你可以用某个值
-mat_dist[is.na(mat_dist)] <- NA
-
-# 2. 准备Pvalue矩阵
-df_pval_wide <- data %>%
-  pivot_wider(
-    id_cols = Predictor,
-    names_from = Target,
-    values_from = Pvalue
-  )
-
-mat_pval <- df_pval_wide %>%
-  column_to_rownames(var = "Predictor") %>%
-  as.matrix()
-
-mat_pval[is.na(mat_pval)] <- 1  # NA设为不显著
-
-# 3. 构建符号矩阵，用于绘制星号
-mat_symbol <- matrix("", nrow = nrow(mat_pval), ncol = ncol(mat_pval),
-                     dimnames = dimnames(mat_pval))
-
-mat_symbol[mat_pval < 0.05] <- "*"
-mat_symbol[mat_pval < 0.01] <- "**"
-mat_symbol[mat_pval < 0.001] <- "***"
-
-# 4. 配色函数, 你可以根据MedianDist实际范围调整这里
-range(data$MedianDist)
-breaks <- c(0,30,60)
-colors <- c("#D45590","white", "#69AADB")
-# colors <- c("#69AADB", "white", "#D45590")
-col_fun <- colorRamp2(breaks, colors)
- # 5. 绘制热图
-a <- rownames(mat_dist)
-
-mat_dist <- mat_dist[a,a]
-pdf("./MedianDist_heatmap_with_significance_ko.pdf", width = 9, height = 9)
-# pdf("./MedianDist_heatmap_with_significance_wt.pdf", width = 9, height = 9)
-Heatmap(
-  mat_dist,
-  name = "MedianDist",
-  col = col_fun,
-  na_col = "grey90",        # NA显示为浅灰色
-  rect_gp = gpar(col = "white", lwd = 1),
-  width = ncol(mat_dist) * unit(6, "mm"),
-  height = nrow(mat_dist) * unit(6, "mm"),
-  row_names_gp = gpar(fontsize = 12),
-  column_names_gp = gpar(fontsize = 12),
-  column_names_rot = 45,
-  cluster_rows = F,
-  cluster_columns = F,
-  cell_fun = function(j, i, x, y, width, height, fill) {
-    # i 行号, j 列号
-    symbol <- mat_symbol[i, j]
-    if (symbol != "") {
-      grid.text(symbol, x = x, y = y, gp = gpar(fontsize = 12, fontface = "bold", col = "black"))
-    }
-  },
-  heatmap_legend_param = list(
-    title = "MedianDist",
-    title_gp = gpar(fontsize = 9),
-    labels_gp = gpar(fontsize = 7)
-  )
+# Run colocalization for KO
+coloc_ko <- run_colocalization(
+  st_obj = st_ko,
+  cell_type_col = "second_type",
+  n_permutations = 1000,
+  min_cell_count = 1
 )
- dev.off()
+cat("KO colocalization completed.\n")
 
-####
-cell_types <- c("Mac_Spp1+", "VasEC_C2","Fibroblast_C1")
-myyycol <- c("#F0027F","#44BB99" , "#386CB0" )  
-group_color=setNames(myyycol,
-                     cell_types)
+# Save colocalization results
+export(coloc_wt, file = "results/colocalization/coloc_wt.xlsx")
+export(coloc_ko, file = "results/colocalization/coloc_ko.xlsx")
+cat("Colocalization results saved.\n")
 
-st_ko_subset <- subset(st_ko, subset = second_type %in% cell_types)
-st_wt_subset <- subset(st_con, subset = second_type %in% cell_types)
-p1 <- SpatialDimPlot(
-  st_wt_subset,crop = F,
-  group.by = "second_type",stroke = NA,#first_type  second_type
-  label = F,          # 显示细胞类型标签
-  pt.size.factor = 9,  # 控制点的大小，使空间分布更清晰
-  image.alpha = 0,cols = group_color)
-# p1
-p2 <- SpatialDimPlot(
-  st_ko_subset,
-  group.by = "second_type",
-  crop = F,stroke = NA,
-  label = F,          # 显示细胞类型标签
-  pt.size.factor = 9,  # 控制点的大小，使空间分布更清晰
-  image.alpha = 0,cols = group_color)+
-scale_x_continuous(expand = c(0,0), limits = c(0, 800))
-# p2
+# ------------------------------------------------------------------------------
+# 3.7 Visualization
+# ------------------------------------------------------------------------------
 
-p <- p1|p2
-p
-library(cowplot)
-p <- plot_grid(
+cat("\nGenerating visualizations...\n")
+
+# 3.7.1 Spatial plots for selected cell types
+cat("  - Spatial subset plots...\n")
+
+# Define cell types of interest
+cell_types_of_interest <- c("Mac_Spp1+", "VasEC_C2", "Fibroblast_C1")
+
+# Color palette
+group_colors <- c("#F0027F", "#44BB99", "#386CB0")
+names(group_colors) <- cell_types_of_interest
+
+# Subset and plot
+st_wt_subset <- subset(st_con, subset = second_type %in% cell_types_of_interest)
+st_ko_subset <- subset(st_ko, subset = second_type %in% cell_types_of_interest)
+
+p1 <- plot_spatial_subset(st_wt_subset, group_colors, "WT")
+p2 <- plot_spatial_subset(st_ko_subset, group_colors, "KO")
+
+# Combine plots
+combined_plot <- plot_grid(
   p1, p2,
   ncol = 2,
   rel_widths = c(1, 1.04),
   align = "hv"
 )
-p
-ggsave(plot = p, filename = "./空转/sub_celltype.pdf", width = 11, height = 10, dpi = 300)
+
+# Save
+ggsave(
+  plot = combined_plot,
+  filename = "results/figures/spatial_subset_celltypes.pdf",
+  width = 11,
+  height = 10,
+  dpi = 300
+)
+cat("  - Spatial plots saved.\n")
+
+# 3.7.2 Colocalization heatmaps
+cat("  - Colocalization heatmaps...\n")
+
+# WT heatmap
+plot_colocalization_heatmap(
+  coloc_data = coloc_wt,
+  output_file = "results/figures/coloc_heatmap_wt.pdf",
+  title = "WT Colocalization"
+)
+
+# KO heatmap
+plot_colocalization_heatmap(
+  coloc_data = coloc_ko,
+  output_file = "results/figures/coloc_heatmap_ko.pdf",
+  title = "KO Colocalization"
+)
+cat("  - Heatmaps saved.\n")
+
+# ------------------------------------------------------------------------------
+# 3.8 Summary Statistics
+# ------------------------------------------------------------------------------
+
+cat("\nGenerating summary statistics...\n")
+
+# Print cell type composition
+cat("\nWT cell type composition:\n")
+print(table(st_con$second_type))
+
+cat("\nKO cell type composition:\n")
+print(table(st_ko$second_type))
+
+# Print colocalization results summary
+cat("\nWT colocalization significant pairs (p < 0.05):\n")
+significant_wt <- coloc_wt[coloc_wt$Pvalue < 0.05, ]
+if (nrow(significant_wt) > 0) {
+  print(significant_wt)
+} else {
+  cat("No significant pairs found.\n")
+}
+
+cat("\nKO colocalization significant pairs (p < 0.05):\n")
+significant_ko <- coloc_ko[coloc_ko$Pvalue < 0.05, ]
+if (nrow(significant_ko) > 0) {
+  print(significant_ko)
+} else {
+  cat("No significant pairs found.\n")
+}
+
+# ==============================================================================
