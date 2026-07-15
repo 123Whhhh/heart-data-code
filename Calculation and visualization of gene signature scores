@@ -158,6 +158,6 @@ p_ferro <- plot_signature_violin(
   y_lab = "Ferroptosis AUCell Score"
 )
 print(p_ferro)
-# 
+ 
 ggsave("./score_plot/Ferroptosis_VasEC0.pdf", p_ferro, width = 5, height = 5, dpi = 300)
 ggsave("./score_plot/EndMT_EC_subtype.pdf", p_endmt, width = 7, height = 5, dpi = 300)
